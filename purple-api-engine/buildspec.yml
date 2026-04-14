@@ -1,0 +1,47 @@
+version: 0.2
+
+env:
+  variables:
+    ECR_REPO_NAME: "airegpt-storm-engine"
+    LAMBDA_PURPLE_NAME: "AireGPT-API-Purpura"
+    AWS_REGION: "us-east-1"
+
+phases:
+  pre_build:
+    commands: |
+      echo "🤖 Iniciando Build de API Púrpura..."
+      export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      
+      echo "🔑 Logueando en ECR..."
+      aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+      
+      REPOSITORY_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME
+      IMAGE_TAG=latest
+
+      echo "🔍 Verificando repo..."
+      aws ecr describe-repositories --repository-names $ECR_REPO_NAME || aws ecr create-repository --repository-name $ECR_REPO_NAME
+
+  build:
+    commands: |
+      echo "📂 Entrando a carpeta del módulo..."
+      cd purple-api-engine
+      
+      export CLEAN_TAG=${CODEBUILD_BUILD_ID##*:}
+      echo "🏷️ Tag limpio: $CLEAN_TAG"
+      
+      echo "🐳 Construyendo Docker de Scipy/Geopandas..."
+      docker build -t $REPOSITORY_URI:$IMAGE_TAG .
+      docker tag $REPOSITORY_URI:$IMAGE_TAG $REPOSITORY_URI:build-$CLEAN_TAG
+
+  post_build:
+    commands: |
+      export CLEAN_TAG=${CODEBUILD_BUILD_ID##*:}
+      
+      echo "⬆️ Subiendo a ECR..."
+      docker push $REPOSITORY_URI:$IMAGE_TAG
+      docker push $REPOSITORY_URI:build-$CLEAN_TAG
+      
+      echo "🔄 Actualizando Lambda API Púrpura..."
+      aws lambda update-function-code --function-name $LAMBDA_PURPLE_NAME --image-uri $REPOSITORY_URI:$IMAGE_TAG
+      
+      echo "✅ Despliegue completado."
