@@ -13,7 +13,7 @@ import os
 S3_BUCKET = "airegpt-storm-data" # DEBES CREAR ESTE BUCKET EN AWS
 S3_KEY_LATEST = "latest_model.json"
 MIRROR_API_URL = "URL_DE_TU_LAMBDA_A_AQUI" # Reemplazar con el endpoint de SACMEX Mirror
-GEOJSON_PATH = '/var/task/zmvm_altitud.geojson'
+GEOJSON_PATH = '/var/task/zmvm_malla_consolidada.geojson'
 
 UMBRAL_NARANJA = 0.5
 UMBRAL_PURPURA = 1.0
@@ -99,7 +99,7 @@ def lambda_handler(event, context):
         grid.loc[dist < 0.02, 'rain_predicted'] = max_rain_actual
 
     grid.loc[grid['rain_predicted'] < 0.15, 'rain_predicted'] = 0
-
+    
     # ==========================================
     # GENERAR JSON (MOCKUP AIRE HOMOLOGADO)
     # ==========================================
@@ -116,10 +116,12 @@ def lambda_handler(event, context):
             "timestamp": ahora.strftime("%Y-%m-%d %H:%M:%S"),
             "lat": round(lat, 5),
             "lon": round(lon, 5),
-            "col": "Zona Metropolitana", # Se puede cruzar con un shapefile de colonias si se desea
-            "mun": "CDMX/Edomex",
-            "edo": None,
-            "altitude": int(row['elevation']),
+            # LECTURA DINÁMICA DEL NUEVO GEOJSON CONSOLIDADO
+            "col": str(row.get('colonia', 'Zona Federal / Sin Colonia')),
+            "mun": str(row.get('municipio', 'CDMX/Edomex')),
+            "edo": str(row.get('estado', 'Ciudad de México')),
+            "pob": int(row.get('poblacion', 0)),
+            "altitude": int(row.get('elevation', 0)),
             "rain_mm_h": float(rain_val),
             "derivative_mm_min": 0.0,
             "risk": "Moderado" if rain_val > 3 else "Ligero",
@@ -132,9 +134,10 @@ def lambda_handler(event, context):
     # Inyectar (Snap) la data dura de las estaciones en sus celdas correspondientes
     for _, est in df_obs.iterrows():
         _, closest_idx = tree.query([est['lat'], est['lon']])
+        
         output_cells[closest_idx].update({
-            "col": est['nombre'],
-            "mun": est['alcaldia'],
+            # Ya NO sobreescribimos 'col' ni 'mun', respetamos la geografía de la celda.
+            # Solo actualizamos los datos meteorológicos y el nombre de la estación.
             "rain_mm_h": float(est['rain']),
             "derivative_mm_min": float(round(derivada, 2)) if est['rain'] == max_rain_actual else 0.0,
             "risk": "Crítico" if alerta_status != "NORMAL" else "Moderado",
