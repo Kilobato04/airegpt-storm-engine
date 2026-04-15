@@ -132,9 +132,9 @@ def lambda_handler(event, context):
 
         lluvia_activa = [s for s in estaciones if float(s['acumulado_actual']) > 0]
         
-        if len(lluvia_activa) < 2:
-            print("💤 ESTADO SLEEP: Menos de 2 estaciones con lluvia.")
-            return {"statusCode": 200, "body": "SLEEP - Sin lluvia suficiente"}
+        # if len(lluvia_activa) < 2:
+        #     print("💤 ESTADO SLEEP: Menos de 2 estaciones con lluvia.")
+        #     return {"statusCode": 200, "body": "SLEEP - Sin lluvia suficiente"}
 
         print(f"⛈️ ESTADO ACTIVO: {len(lluvia_activa)} estaciones con lluvia.")
         
