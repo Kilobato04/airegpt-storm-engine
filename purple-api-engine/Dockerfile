@@ -7,7 +7,7 @@ RUN pip3 install -r requirements.txt --target "${LAMBDA_TASK_ROOT}"
 
 # 2. Copiar código fuente y topografía
 COPY main.py ${LAMBDA_TASK_ROOT}
-COPY zmvm_altitud.geojson ${LAMBDA_TASK_ROOT}
+COPY zmvm_malla_consolidada.geojson ${LAMBDA_TASK_ROOT}
 
 # 3. Comando por defecto
 CMD [ "main.lambda_handler" ]
