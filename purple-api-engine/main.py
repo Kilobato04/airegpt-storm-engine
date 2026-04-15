@@ -12,7 +12,7 @@ import os
 # --- CONFIGURACIÓN ---
 S3_BUCKET = "airegpt-storm-data" # DEBES CREAR ESTE BUCKET EN AWS
 S3_KEY_LATEST = "latest_model.json"
-MIRROR_API_URL = "URL_DE_TU_LAMBDA_A_AQUI" # Reemplazar con el endpoint de SACMEX Mirror
+MIRROR_API_URL = "https://onr6tt7eohxppmqaak3jyapt3e0knhvu.lambda-url.us-east-1.on.aws/" # Reemplazar con el endpoint de SACMEX Mirror
 GEOJSON_PATH = '/var/task/zmvm_malla_consolidada.geojson'
 
 UMBRAL_NARANJA = 0.5
