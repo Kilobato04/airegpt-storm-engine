@@ -1,13 +1,13 @@
 FROM public.ecr.aws/lambda/python:3.11
 
-# 1. Instalar herramientas de compilación de C++ (Vital para scipy/geopandas)
-RUN dnf update -y && \
-    dnf install -y gcc gcc-c++ python3-devel
+# 1. Instalar herramientas de compilación (usando yum para Amazon Linux 2)
+RUN yum update -y && \
+    yum install -y gcc gcc-c++ python3-devel
 
 # 2. Copiar requirements
 COPY requirements.txt ${LAMBDA_TASK_ROOT}
 
-# 3. Actualizar pip e instalar librerías (usando --no-cache-dir para ahorrar memoria RAM)
+# 3. Actualizar pip e instalar librerías
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt --target "${LAMBDA_TASK_ROOT}"
 
