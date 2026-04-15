@@ -409,6 +409,7 @@ class EarlyWarningSacmexAPI:
 
     def fetch_open_meteo(self):
         try:
+            # Cuadrícula de 100 puntos en CDMX/Edomex
             latS, latN, lonW, lonE = 19.155, 19.772, -99.352, -98.867
             steps = 9
             lats, lons = [], []
@@ -419,8 +420,12 @@ class EarlyWarningSacmexAPI:
                     lats.append(f"{lat:.4f}")
                     lons.append(f"{lon:.4f}")
                     
-            url = f"https://api.open-meteo.com/v1/forecast?latitude={','.join(lats)}&longitude={','.join(lons)}&hourly=temperature_2m,relative_humidity_2m,precipitation,surface_pressure,wind_speed_10m,wind_direction_10m&timezone=America%2FMexico_City&forecast_days=1"
-            res = requests.get(url, timeout=8)
+            # VENTANA MÓVIL: Cambiamos forecast_days=1 por forecast_hours=6
+            horas_futuras = 6
+            url = f"https://api.open-meteo.com/v1/forecast?latitude={','.join(lats)}&longitude={','.join(lons)}&hourly=temperature_2m,relative_humidity_2m,precipitation,surface_pressure,wind_speed_10m,wind_direction_10m&timezone=America%2FMexico_City&forecast_hours={horas_futuras}"
+            
+            res = requests.get(url, timeout=12) # Aumenté un poco el timeout porque 100 puntos pesan
+            res.raise_for_status()
             data = res.json()
             
             if isinstance(data, list):
@@ -498,7 +503,8 @@ def handler(event, context):
         'Cache-Control': 'public, max-age=60'
     }
     
-    path = event.get('path', '')
+    # AWS Function URLs usan rawPath, API Gateway usa path
+    ruta = event.get('rawPath', event.get('path', '/'))
     query = event.get('queryStringParameters', {}) or {}
     
     if event.get('httpMethod') == 'OPTIONS':
@@ -506,14 +512,20 @@ def handler(event, context):
 
     api = EarlyWarningSacmexAPI()
 
-    if 'forecast' in query.get('type', ''):
+    # ==========================================
+    # RUTA: EL FUTURO (/forecast)
+    # ==========================================
+    if ruta == '/forecast' or 'forecast' in query.get('type', ''):
         res = api.get_forecast_data()
         return {"statusCode": 200 if res['success'] else 500, "headers": headers, "body": json.dumps(res)}
 
+    # ==========================================
+    # RUTA: EL PRESENTE (/)
+    # ==========================================
     try:
         res = api.get_data()
         return {"statusCode": 200, "headers": headers, "body": json.dumps(res)}
     except Exception as e:
         err = api.build_emergency_response()
         err['critical_error'] = str(e)
-        return {"statusCode": 200, "headers": headers, "body": json.dumps(err)}
+        return {"statusCode": 500, "headers": headers, "body": json.dumps(err)}
