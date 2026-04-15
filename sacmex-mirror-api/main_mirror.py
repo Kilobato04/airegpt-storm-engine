@@ -387,9 +387,25 @@ class EarlyWarningSacmexAPI:
                 "ultima_actualizacion": ultima_fecha,
                 "cache_timestamp_ISO": datetime.datetime.now(datetime.timezone.utc).isoformat()
             }
+            
         except Exception as e:
             self.log(f"Error en CHAAK: {e}")
-            return None
+            # SALVAVIDAS: Retornar la estación en ceros para no romper el JSON
+            return {
+                **base_data,
+                "acumulado_actual": 0.0,
+                "acumulado_desde_6am": 0.0,
+                "viento_velocidad": 0.0,
+                "viento_direccion": 0.0,
+                "intensidad": "OFFLINE", # Puedes cambiar esto por "0" o "NULA" si tu mapa lo prefiere
+                "auditoria": {
+                    "confianza_index": 0.0, 
+                    "alertas": ["SENSOR APAGADO / FALLA DE CONEXIÓN"], 
+                    "frescura_dato_segundos": 999999
+                },
+                "ultima_actualizacion": "OFFLINE",
+                "cache_timestamp_ISO": datetime.datetime.now(datetime.timezone.utc).isoformat()
+            }
 
     def fetch_open_meteo(self):
         try:
