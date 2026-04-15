@@ -47,8 +47,11 @@ def lambda_handler(event, context):
     # Si el evento trae 'run_forecast', es el Cron de 1 hora. Si no, es el de 3 min.
     es_trabajo_pronostico = event.get('action') == 'run_forecast'
     
-    # Carga de Geometría (Una sola vez para optimizar RAM)
-    grid = gpd.read_file(GEOJSON_PATH)
+    # Carga de Geometría (Hack: Bypass de Fiona)
+    with open(GEOJSON_PATH, 'r', encoding='utf-8') as f:
+        malla_json = json.load(f)
+        
+    grid = gpd.GeoDataFrame.from_features(malla_json['features'])
     grid['lon'] = grid.geometry.x
     grid['lat'] = grid.geometry.y
 
