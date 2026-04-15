@@ -4,7 +4,7 @@ git pull origin main
 
 echo "📦 Empaquetando el Lector..."
 cd rain-api-reader
-zip -r reader.zip lambda_function.py
+zip -r reader.zip reader_main.py
 
 echo "🚀 Desplegando en AWS Lambda..."
 aws lambda update-function-code \
