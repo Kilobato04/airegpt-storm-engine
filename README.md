@@ -32,5 +32,6 @@ El despliegue se realiza directamente desde la consola de AWS CloudShell para ev
 Esta Lambda es ligera y se sube mediante un archivo `.zip` estándar.
 ```bash
 git pull origin main
+cd airegpt-storm-engine
 sh deploy_rainapp.sh
 
