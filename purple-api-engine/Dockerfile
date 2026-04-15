@@ -16,4 +16,4 @@ COPY main.py ${LAMBDA_TASK_ROOT}
 COPY zmvm_malla_consolidada.geojson ${LAMBDA_TASK_ROOT}
 
 # 5. Comando de arranque
-CMD [ "main.handler" ]
+CMD [ "main.lambda_handler" ]
