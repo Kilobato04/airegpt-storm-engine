@@ -37,6 +37,38 @@ def ejecutar_interpolacion(df_puntos, malla_base):
         return vals
 
 def lambda_handler(event, context):
+    
+    # ==========================================
+    # --- 0. INTERCEPTOR HTTP (API PARA FRONTEND MAPAS) ---
+    # ==========================================
+    # Si el evento trae 'rawPath', significa que entraron por la Function URL
+    ruta_web = event.get('rawPath', event.get('path'))
+    
+    if ruta_web:
+        headers = {
+            'Access-Control-Allow-Origin': '*',
+            'Content-Type': 'application/json',
+            'Cache-Control': 'public, max-age=60'
+        }
+        try:
+            # Si en la URL escribieron /forecast, damos la malla de 3000 celdas del futuro
+            if '/forecast' in ruta_web:
+                resp = s3_client.get_object(Bucket=S3_BUCKET, Key=S3_KEY_FORECAST)
+                return {"statusCode": 200, "headers": headers, "body": resp['Body'].read().decode('utf-8')}
+            
+            # Si entran a la raíz (/), damos la malla del presente
+            else:
+                resp = s3_client.get_object(Bucket=S3_BUCKET, Key=S3_KEY_LATEST)
+                return {"statusCode": 200, "headers": headers, "body": resp['Body'].read().decode('utf-8')}
+        
+        except Exception as e:
+            return {"statusCode": 500, "headers": headers, "body": json.dumps({"error": "Archivo no encontrado en S3", "details": str(e)})}
+
+    # ==========================================
+    # --- LÓGICA DEL MOTOR (CRON JOBS DE EVENTBRIDGE) ---
+    # ==========================================
+    # (Si no hay ruta_web, ignoramos el interceptor y corremos el motor normal)
+    
     ahora = datetime.datetime.now(datetime.timezone.utc)
     es_trabajo_pronostico = event.get('action') == 'run_forecast'
     
