@@ -147,12 +147,17 @@ def lambda_handler(event, context):
             max_rain_previo = 0
             fecha_previa = ahora - datetime.timedelta(minutes=3)
 
-        df_obs = pd.DataFrame([{
-            'id': s['id'], 'nombre': s['nombre'], 'lat': float(s['latitud']),
-            'lon': float(s['longitud']), 'rain': float(s['acumulado_actual'])
-        } for s in lluvia_activa])
+        # Aseguramos que el DataFrame siempre tenga columnas, incluso si no hay lluvia
+        if lluvia_activa:
+            df_obs = pd.DataFrame([{
+                'id': s['id'], 'nombre': s['nombre'], 'lat': float(s['latitud']),
+                'lon': float(s['longitud']), 'rain': float(s['acumulado_actual'])
+            } for s in lluvia_activa])
+            max_rain_actual = df_obs['rain'].max()
+        else:
+            df_obs = pd.DataFrame(columns=['id', 'nombre', 'lat', 'lon', 'rain'])
+            max_rain_actual = 0.0
 
-        max_rain_actual = df_obs['rain'].max()
         delta_time_min = (ahora - fecha_previa).total_seconds() / 60.0
         delta_rain = max_rain_actual - max_rain_previo
         
