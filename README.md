@@ -31,7 +31,7 @@ El despliegue se realiza directamente desde la consola de AWS CloudShell para ev
 ### Despliegue de Lambda A (Mirror API)
 Esta Lambda es ligera y se sube mediante un archivo `.zip` estándar.
 ```bash
-git pull origin main
 cd airegpt-storm-engine
+git pull origin main
 sh deploy_rainapp.sh
 
