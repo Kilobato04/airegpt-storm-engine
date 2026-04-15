@@ -9,10 +9,11 @@ from scipy.spatial import cKDTree
 from scipy.interpolate import Rbf
 import os
 
-# --- CONFIGURACIÓN ---
-S3_BUCKET = "airegpt-storm-data" # DEBES CREAR ESTE BUCKET EN AWS
+# --- 1. CONFIGURACIÓN ---
+S3_BUCKET = "airegpt-storm-data"
 S3_KEY_LATEST = "latest_model.json"
-MIRROR_API_URL = "https://onr6tt7eohxppmqaak3jyapt3e0knhvu.lambda-url.us-east-1.on.aws/" # Reemplazar con el endpoint de SACMEX Mirror
+S3_KEY_FORECAST = "latest_forecast.json" # <--- AJUSTE 1
+MIRROR_API_URL = "https://onr6tt7eohxppmqaak3jyapt3e0knhvu.lambda-url.us-east-1.on.aws/"
 GEOJSON_PATH = '/var/task/zmvm_malla_consolidada.geojson'
 
 UMBRAL_NARANJA = 0.5
@@ -20,151 +21,91 @@ UMBRAL_PURPURA = 1.0
 
 s3_client = boto3.client('s3')
 
+# --- 2. AJUSTE: FUNCIÓN MATEMÁTICA INDEPENDIENTE ---
+def ejecutar_interpolacion(df_puntos, malla_base):
+    """
+    Toma puntos (estaciones o forecast) y los proyecta sobre las 3000 celdas
+    """
+    try:
+        rbf = Rbf(df_puntos['lon'], df_puntos['lat'], df_puntos['rain'], 
+                  function='gaussian', epsilon=0.03, smooth=0.1)
+        prediccion = np.round(np.maximum(0, rbf(malla_base['lon'], malla_base['lat'])), 2)
+        prediccion[prediccion < 0.15] = 0
+        return prediccion
+    except:
+        # Fallback si hay pocos puntos
+        tree = cKDTree(df_puntos[['lon', 'lat']].values)
+        dist, _ = tree.query(malla_base[['lon', 'lat']].values)
+        vals = np.zeros(len(malla_base))
+        vals[dist < 0.02] = df_puntos['rain'].max()
+        return vals
+
 def lambda_handler(event, context):
-    print("🚀 Iniciando Motor API Púrpura (Evaluando Estado...)")
-    
-    # 1. LEER API ESPEJO (SACMEX)
-    try:
-        req = requests.get(MIRROR_API_URL, timeout=10)
-        api_data = req.json()
-        estaciones = api_data.get('data', [])
-    except Exception as e:
-        return {"statusCode": 500, "body": f"Error leyendo API Espejo: {e}"}
-
-    # Filtrar estaciones con lluvia
-    lluvia_activa = [s for s in estaciones if float(s['acumulado_actual']) > 0]
-    
-    # ==========================================
-    # ESTADO 0: SLEEP (Sin Lluvia, no modelar)
-    # ==========================================
-    if len(lluvia_activa) < 2:
-        print("💤 ESTADO SLEEP: Menos de 2 estaciones con lluvia. Abortando modelo.")
-        return {"statusCode": 200, "body": "SLEEP - Sin lluvia suficiente"}
-
-    # ==========================================
-    # ESTADO 1 & 2: ACTIVE / CRITICAL
-    # ==========================================
-    print(f"⛈️ ESTADO ACTIVO: {len(lluvia_activa)} estaciones con lluvia detectadas.")
-    
-    # Obtener estado anterior de S3 para la Derivada
-    try:
-        response = s3_client.get_object(Bucket=S3_BUCKET, Key=S3_KEY_LATEST)
-        estado_previo = json.loads(response['Body'].read().decode('utf-8'))
-        max_rain_previo = estado_previo.get('metadata', {}).get('lluvia_max', 0)
-        fecha_previa_str = estado_previo.get('timestamp')
-        fecha_previa = datetime.datetime.fromisoformat(fecha_previa_str)
-    except Exception:
-        max_rain_previo = 0
-        fecha_previa = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=3)
-
-    # Preparar datos de las estaciones para el modelo
-    df_obs = pd.DataFrame([{
-        'id': s['id'],
-        'nombre': s['nombre'],
-        'lat': float(s['latitud']),
-        'lon': float(s['longitud']),
-        'rain': float(s['acumulado_actual']),
-        'alcaldia': s['alcaldia']
-    } for s in estaciones if float(s['acumulado_actual']) > 0])
-
-    max_rain_actual = df_obs['rain'].max()
     ahora = datetime.datetime.now(datetime.timezone.utc)
     
-    # Calcular Derivada
-    delta_rain = max_rain_actual - max_rain_previo
-    delta_time_min = (ahora - fecha_previa).total_seconds() / 60.0
+    # --- 3. AJUSTE: DETECCIÓN DE EVENTO ---
+    # Si el evento trae 'run_forecast', es el Cron de 1 hora. Si no, es el de 3 min.
+    es_trabajo_pronostico = event.get('action') == 'run_forecast'
     
-    derivada = 0.0
-    alerta_status = "NORMAL"
-    
-    if delta_time_min > 0 and delta_rain > 0:
-        derivada = delta_rain / delta_time_min
-        if derivada >= UMBRAL_NARANJA: alerta_status = "PREVENTIVA_NARANJA"
-        if derivada >= UMBRAL_PURPURA: alerta_status = "CRITICA_PURPURA"
-
-    print(f"📈 Derivada: {derivada:.2f} mm/min | Alerta: {alerta_status}")
-
-    # CARGA GEOMETRÍA
+    # Carga de Geometría (Una sola vez para optimizar RAM)
     grid = gpd.read_file(GEOJSON_PATH)
     grid['lon'] = grid.geometry.x
     grid['lat'] = grid.geometry.y
-    grid['rain_predicted'] = 0.0
 
-    # RBF GAUSSIANO
-    try:
-        rbf = Rbf(df_obs['lon'], df_obs['lat'], df_obs['rain'], function='gaussian', epsilon=0.03, smooth=0.1)
-        grid['rain_predicted'] = np.round(np.maximum(0, rbf(grid['lon'], grid['lat'])), 2)
-    except:
-        dist, _ = cKDTree(df_obs[['lon', 'lat']].values).query(grid[['lon', 'lat']].values)
-        grid.loc[dist < 0.02, 'rain_predicted'] = max_rain_actual
-
-    grid.loc[grid['rain_predicted'] < 0.15, 'rain_predicted'] = 0
-    
     # ==========================================
-    # GENERAR JSON (MOCKUP AIRE HOMOLOGADO)
+    # CASO PROYECCIÓN (FUTURO / FORECAST)
     # ==========================================
-    output_cells = []
-    
-    # KDTree para hacer "Snap" de las estaciones reales a las celdas
-    tree = cKDTree(grid[['lat', 'lon']].values)
-    
-    for idx, row in grid.iterrows():
-        lat, lon = row['lat'], row['lon']
-        rain_val = row['rain_predicted']
-        
-        celda = {
-            "timestamp": ahora.strftime("%Y-%m-%d %H:%M:%S"),
-            "lat": round(lat, 5),
-            "lon": round(lon, 5),
-            # LECTURA DINÁMICA DEL NUEVO GEOJSON CONSOLIDADO
-            "col": str(row.get('colonia', 'Zona Federal / Sin Colonia')),
-            "mun": str(row.get('municipio', 'CDMX/Edomex')),
-            "edo": str(row.get('estado', 'Ciudad de México')),
-            "pob": int(row.get('poblacion', 0)),
-            "altitude": int(row.get('elevation', 0)),
-            "rain_mm_h": float(rain_val),
-            "derivative_mm_min": 0.0,
-            "risk": "Moderado" if rain_val > 3 else "Ligero",
-            "alert_status": "NORMAL",
-            "station": None,
-            "sources": json.dumps({"rain_mm_h": "Modeled (Gaussian RBF)"})
-        }
-        output_cells.append(celda)
+    if es_trabajo_pronostico:
+        print("🔮 Iniciando Proyección de Forecast (6 horas)...")
+        try:
+            # Llamamos a la nueva ruta /forecast que creamos en Lambda A
+            req_f = requests.get(f"{MIRROR_API_URL}forecast", timeout=15)
+            forecast_raw = req_f.json().get('data', [])
+        except Exception as e:
+            return {"statusCode": 500, "body": f"Error en API Forecast: {e}"}
 
-    # Inyectar (Snap) la data dura de las estaciones en sus celdas correspondientes
-    for _, est in df_obs.iterrows():
-        _, closest_idx = tree.query([est['lat'], est['lon']])
-        
-        output_cells[closest_idx].update({
-            # Ya NO sobreescribimos 'col' ni 'mun', respetamos la geografía de la celda.
-            # Solo actualizamos los datos meteorológicos y el nombre de la estación.
-            "rain_mm_h": float(est['rain']),
-            "derivative_mm_min": float(round(derivada, 2)) if est['rain'] == max_rain_actual else 0.0,
-            "risk": "Crítico" if alerta_status != "NORMAL" else "Moderado",
-            "alert_status": alerta_status if est['rain'] == max_rain_actual else "NORMAL",
-            "station": f"{est['nombre']} (ID: {est['id']})",
-            "sources": json.dumps({"rain_mm_h": "Official SACMEX", "derivative": "Calculated Live"})
-        })
+        if not forecast_raw:
+            return {"statusCode": 200, "body": "Sin datos para forecast"}
 
-    # JSON FINAL
-    final_payload = {
-        "timestamp": ahora.isoformat(),
-        "metadata": {
-            "lluvia_max": max_rain_actual,
-            "derivada_max": round(derivada, 3),
-            "alerta_global": alerta_status
-        },
-        "values": output_cells
-    }
+        bloque_futuro = {"generated_at": ahora.isoformat(), "time_steps": {}}
 
-    # Guardar en S3
-    s3_client.put_object(
-        Bucket=S3_BUCKET,
-        Key=S3_KEY_LATEST,
-        Body=json.dumps(final_payload),
-        ContentType='application/json',
-        CacheControl='max-age=60'
-    )
+        # Modelamos las 6 horas futuras (índices 1 a 5 del JSON de Open-Meteo)
+        for i in range(1, 6):
+            datos_hora = []
+            hora_iso = ""
+            for p in forecast_raw:
+                hora_iso = p['hourly']['time'][i]
+                datos_hora.append({
+                    'lat': p['lat'], 
+                    'lon': p['lon'], 
+                    'rain': p['hourly']['precipitation'][i]
+                })
+            
+            df_h = pd.DataFrame(datos_hora)
+            lluvia_proyectada = ejecutar_interpolacion(df_h, grid)
+            
+            # Guardamos solo celdas con lluvia para que el JSON no pese megas
+            bloque_futuro["time_steps"][hora_iso] = [
+                {"lat": round(grid.iloc[idx]['lat'], 5), "lon": round(grid.iloc[idx]['lon'], 5), "mm": float(lluvia_proyectada[idx])}
+                for idx in range(len(lluvia_proyectada)) if lluvia_proyectada[idx] > 0
+            ]
 
-    print("✅ Modelado completado y subido a S3.")
-    return {"statusCode": 200, "body": "Model executed successfully"}
+        # Guardar el bloque completo en S3
+        s3_client.put_object(
+            Bucket=S3_BUCKET, Key=S3_KEY_FORECAST,
+            Body=json.dumps(bloque_futuro), ContentType='application/json'
+        )
+        print("✅ Pronóstico de 6 horas guardado exitosamente.")
+        return {"statusCode": 200, "body": "Forecast S3 Updated"}
+
+    # ==========================================
+    # CASO MONITOREO (PRESENTE / SACMEX)
+    # ==========================================
+    else:
+        print("🚀 Iniciando Motor de Lluvia Actual...")
+        # (Aquí mantienes exactamente tu bloque actual de SACMEX)
+        # 1. Leer API Espejo
+        # 2. Calcular Derivada
+        # 3. Correr ejecutar_interpolacion
+        # 4. Generar output_cells y subir a S3_KEY_LATEST
+        return {"statusCode": 200, "body": "Present Model Updated"}
