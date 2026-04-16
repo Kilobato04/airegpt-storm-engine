@@ -33,5 +33,6 @@ Esta Lambda es ligera y se sube mediante un archivo `.zip` estándar.
 ```bash
 cd airegpt-storm-engine
 git pull origin main
-sh deploy_rainapp.sh
+sh deploy_rainapp.sh --> deploy Lamnda A y B
+deploy_reader.sh --> deploy Lambda para el bot
 
