@@ -175,6 +175,7 @@ def lambda_handler(event, context):
         output_cells = []
         tree = cKDTree(grid[['lat', 'lon']].values)
         
+        # 1. Inicializamos las 3,000 celdas por defecto (Asumiendo que son interpolación)
         for idx, row in grid.iterrows():
             rain_val = row['rain_predicted']
             output_cells.append({
@@ -185,18 +186,44 @@ def lambda_handler(event, context):
                 "rain_mm_h": float(rain_val),
                 "derivative_mm_min": 0.0,
                 "risk": "Moderado" if rain_val > 3 else "Ligero",
-                "alert_status": "NORMAL", "station": None
+                "alert_status": "NORMAL",
+                "station": None,
+                "source": "Modelo Espacial (RBF)"
             })
 
-        for _, est in df_obs.iterrows():
-            _, closest_idx = tree.query([est['lat'], est['lon']])
-            output_cells[closest_idx].update({
-                "rain_mm_h": float(est['rain']),
-                "derivative_mm_min": float(round(derivada, 2)) if est['rain'] == max_rain_actual else 0.0,
-                "risk": "Crítico" if alerta_status != "NORMAL" else "Moderado",
-                "alert_status": alerta_status if est['rain'] == max_rain_actual else "NORMAL",
-                "station": f"{est['nombre']} (ID: {est['id']})"
-            })
+        # 2. Planchamos TODAS las estaciones sobre la malla (llueva o no)
+        for s in estaciones:
+            try:
+                s_lat = float(s['latitud'])
+                s_lon = float(s['longitud'])
+                s_rain = float(s['acumulado_actual'])
+                _, closest_idx = tree.query([s_lat, s_lon])
+                
+                nombre_est = str(s.get('nombre', ''))
+                id_est = str(s.get('id', ''))
+                
+                # Diferenciar fuentes de datos
+                if 'chaak' in nombre_est.lower() or 'smability' in nombre_est.lower():
+                    origen = "Sensor Activo (Red Smability)"
+                else:
+                    origen = "Sensor Activo (Red SACMEX)"
+
+                output_cells[closest_idx].update({
+                    "station": f"{nombre_est} (ID: {id_est})",
+                    "source": origen
+                })
+
+                # 3. Si además está lloviendo en esta estación, forzamos la realidad dura y las alertas
+                if s_rain > 0:
+                    output_cells[closest_idx]["rain_mm_h"] = float(s_rain)
+                    output_cells[closest_idx]["risk"] = "Crítico" if alerta_status != "NORMAL" else "Moderado"
+                    
+                    if max_rain_actual > 0 and s_rain == max_rain_actual:
+                        output_cells[closest_idx]["derivative_mm_min"] = float(round(derivada, 2))
+                        output_cells[closest_idx]["alert_status"] = alerta_status
+
+            except Exception:
+                continue
 
         final_payload = {
             "timestamp": ahora.isoformat(),
