@@ -85,14 +85,31 @@ def lambda_handler(event, context):
     # ==========================================
     if es_trabajo_pronostico:
         print("🔮 Iniciando Proyección de Forecast (6 horas)...")
-        try:
-            req_f = requests.get(f"{MIRROR_API_URL}forecast", timeout=15)
-            forecast_raw = req_f.json().get('data', [])
-        except Exception as e:
-            return {"statusCode": 500, "body": f"Error API Forecast: {e}"}
+        forecast_raw = []
+        
+        # 🚨 FIX: 3 Reintentos con Timeouts largos para no ahorcar a la Lambda A
+        for intento in range(3):
+            try:
+                print(f"📡 Solicitando datos a Mirror API (Intento {intento + 1}/3)...")
+                # Damos 30 segundos de paciencia a Lambda A
+                req_f = requests.get(f"{MIRROR_API_URL}forecast", timeout=30)
+                if req_f.status_code == 200:
+                    forecast_raw = req_f.json().get('data', [])
+                    if forecast_raw:
+                        print("✅ Datos de forecast recibidos con éxito.")
+                        break # Salir del loop si tuvimos éxito
+                else:
+                    print(f"⚠️ Mirror API devolvió Status Code: {req_f.status_code}")
+            except requests.exceptions.Timeout:
+                print(f"⏱️ TIMEOUT: La Mirror API tardó más de 30 segundos en el intento {intento + 1}")
+            except Exception as e:
+                print(f"❌ Error conectando a Mirror API: {e}")
+            
+            time.sleep(2) # Esperar 2 segundos antes de reintentar
 
         if not forecast_raw:
-            return {"statusCode": 200, "body": "Sin datos de forecast"}
+            print("🛑 Fallo total al recuperar datos. Abortando forecast.")
+            return {"statusCode": 500, "body": "Fallo al obtener datos de Open-Meteo tras 3 intentos."}
 
         bloque_futuro = {"generated_at": ahora.isoformat(), "time_steps": {}}
 
