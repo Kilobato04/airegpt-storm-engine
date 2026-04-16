@@ -96,27 +96,34 @@ def lambda_handler(event, context):
 
         bloque_futuro = {"generated_at": ahora.isoformat(), "time_steps": {}}
 
-        for i in range(1, 6):
-            datos_hora = []
-            hora_iso = ""
-            for p in forecast_raw:
-                hora_iso = p['hourly']['time'][i]
-                datos_hora.append({'lat': p['lat'], 'lon': p['lon'], 'rain': p['hourly']['precipitation'][i]})
-            
-            df_h = pd.DataFrame(datos_hora)
-            lluvia_proyectada = ejecutar_interpolacion(df_h, grid)
-            
-            bloque_futuro["time_steps"][hora_iso] = [
-                {"lat": round(grid.iloc[idx]['lat'], 5), "lon": round(grid.iloc[idx]['lon'], 5), "mm": float(lluvia_proyectada[idx])}
-                for idx in range(len(lluvia_proyectada)) if lluvia_proyectada[idx] > 0
-            ]
+        try:
+            for i in range(1, 6):
+                datos_hora = []
+                hora_iso = ""
+                for p in forecast_raw:
+                    hora_iso = p['hourly']['time'][i]
+                    datos_hora.append({'lat': p['lat'], 'lon': p['lon'], 'rain': p['hourly']['precipitation'][i]})
+                
+                print(f"⏳ Calculando IA Espacial para: {hora_iso}...")
+                df_h = pd.DataFrame(datos_hora)
+                lluvia_proyectada = ejecutar_interpolacion(df_h, grid)
+                
+                bloque_futuro["time_steps"][hora_iso] = [
+                    {"lat": round(grid.iloc[idx]['lat'], 5), "lon": round(grid.iloc[idx]['lon'], 5), "mm": float(lluvia_proyectada[idx])}
+                    for idx in range(len(lluvia_proyectada)) if lluvia_proyectada[idx] > 0
+                ]
 
-        s3_client.put_object(
-            Bucket=S3_BUCKET, Key=S3_KEY_FORECAST,
-            Body=json.dumps(bloque_futuro), ContentType='application/json'
-        )
-        print("✅ Pronóstico guardado en S3.")
-        return {"statusCode": 200, "body": "Forecast Updated"}
+            # Si sobrevivió a las 5 horas, sube a S3
+            s3_client.put_object(
+                Bucket=S3_BUCKET, Key=S3_KEY_FORECAST,
+                Body=json.dumps(bloque_futuro), ContentType='application/json'
+            )
+            print("✅ Pronóstico guardado en S3 exitosamente.")
+            return {"statusCode": 200, "body": "Forecast Updated"}
+            
+        except Exception as e:
+            print(f"❌ ERROR FATAL en el cálculo del forecast: {str(e)}")
+            return {"statusCode": 500, "body": f"Error interno en forecast: {str(e)}"}
 
     # ==========================================
     # CASO B: PRESENTE (Cada 3 minutos)
