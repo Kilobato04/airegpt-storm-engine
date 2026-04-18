@@ -378,12 +378,10 @@ class EarlyWarningSacmexAPI:
                     self.log(f"Micro-falla en CHAAK ({sensor_id}): {e}")
                     return []
 
-            # 🚨 INVOCAMOS A LOS 5 FANTÁSTICOS (Secuencialmente para no ser bloqueados)
+            # 🚨 SOLO LOS 3 CRÍTICOS PARA CFD (Dinámica de Fluidos)
             raw_rain = get_sensor_data(24) # Lluvia
             raw_wind = get_sensor_data(19) # Velocidad Viento
             raw_deg  = get_sensor_data(18) # Dirección Viento
-            raw_temp = get_sensor_data(12) # Temperatura
-            raw_hum  = get_sensor_data(3)  # Humedad
 
             def extract_last_value(sensor_list):
                 valid_data = [d for d in sensor_list if isinstance(d, dict) and 'Data' in d]
@@ -397,25 +395,19 @@ class EarlyWarningSacmexAPI:
                     return max([self.float_safe(d.get('Data', 0)) for d in valid_data]), valid_data[-1].get('TimeStamp', "OFFLINE")
                 return 0.0, "OFFLINE"
 
-            # Extracción paralela de valores y fechas
             max_lluvia, f_lluvia = extract_max_value(raw_rain)
             wind_speed, f_viento = extract_last_value(raw_wind)
             wind_deg, f_deg = extract_last_value(raw_deg)
-            temp_val, f_temp = extract_last_value(raw_temp)
-            hum_val, f_hum = extract_last_value(raw_hum)
             
-            # Buscamos la fecha más reciente de los sensores que sí respondieron para mantener el status ONLINE
-            fechas_validas = [f for f in [f_lluvia, f_viento, f_deg, f_temp, f_hum] if f != "OFFLINE"]
+            fechas_validas = [f for f in [f_lluvia, f_viento, f_deg] if f != "OFFLINE"]
             ultima_fecha = max(fechas_validas) if fechas_validas else "OFFLINE"
 
+            # 🚨 OBJETO LIMPIO: Sin campos fantasma
             return {
                 **base_data,
                 "acumulado_actual": round(max_lluvia, 2),
-                "acumulado_desde_6am": round(max_lluvia, 2),
                 "viento_velocidad": round(wind_speed, 1),
                 "viento_direccion": round(wind_deg, 0),
-                "temperatura_2m": round(temp_val, 1),
-                "humedad_relativa": round(hum_val, 0),
                 "intensidad": self.calculate_intensity(max_lluvia),
                 "auditoria": {"confianza_index": 1.0 if ultima_fecha != "OFFLINE" else 0.0, "alertas": [], "frescura_dato_segundos": 0},
                 "ultima_actualizacion": ultima_fecha,
@@ -426,9 +418,9 @@ class EarlyWarningSacmexAPI:
             self.log(f"❌ Error crítico en CHAAK: {e}")
             return {
                 **base_data,
-                "acumulado_actual": 0.0, "acumulado_desde_6am": 0.0,
-                "viento_velocidad": 0.0, "viento_direccion": 0.0,
-                "temperatura_2m": 0.0, "humedad_relativa": 0.0,
+                "acumulado_actual": 0.0, 
+                "viento_velocidad": 0.0, 
+                "viento_direccion": 0.0,
                 "intensidad": "OFFLINE", 
                 "auditoria": {"confianza_index": 0.0, "alertas": [f"Falla: {str(e)[:30]}"], "frescura_dato_segundos": 999999},
                 "ultima_actualizacion": "OFFLINE",
