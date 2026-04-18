@@ -366,10 +366,9 @@ class EarlyWarningSacmexAPI:
             def get_sensor_data(sensor_id):
                 try:
                     res = requests.get(url_base + str(sensor_id), headers=headers, timeout=10)
-                    time.sleep(0.5) # Respiro para el firewall IIS
+                    time.sleep(0.5) # Respiro vital para el firewall IIS
                     raw = res.json() if res.status_code == 200 else []
                     
-                    # Extraer la lista sin importar cómo venga envuelta
                     if isinstance(raw, dict):
                         return raw.get('data', raw.get('Data', []))
                     elif isinstance(raw, list):
@@ -379,12 +378,13 @@ class EarlyWarningSacmexAPI:
                     self.log(f"Micro-falla en CHAAK ({sensor_id}): {e}")
                     return []
 
-            # Pedimos los 3 sensores de la triada dinámica
-            raw_rain = get_sensor_data(24)
-            raw_wind = get_sensor_data(19)
-            raw_deg  = get_sensor_data(18)
+            # 🚨 INVOCAMOS A LOS 5 FANTÁSTICOS (Secuencialmente para no ser bloqueados)
+            raw_rain = get_sensor_data(24) # Lluvia
+            raw_wind = get_sensor_data(19) # Velocidad Viento
+            raw_deg  = get_sensor_data(18) # Dirección Viento
+            raw_temp = get_sensor_data(12) # Temperatura
+            raw_hum  = get_sensor_data(3)  # Humedad
 
-            # 🚨 FIX DE LLAVES: Parseamos usando 'Data' y 'TimeStamp'
             def extract_last_value(sensor_list):
                 valid_data = [d for d in sensor_list if isinstance(d, dict) and 'Data' in d]
                 if valid_data:
@@ -397,13 +397,16 @@ class EarlyWarningSacmexAPI:
                     return max([self.float_safe(d.get('Data', 0)) for d in valid_data]), valid_data[-1].get('TimeStamp', "OFFLINE")
                 return 0.0, "OFFLINE"
 
-            # Extraemos los valores
-            max_lluvia, ultima_fecha_lluvia = extract_max_value(raw_rain)
-            wind_speed, _ = extract_last_value(raw_wind)
-            wind_deg, ultima_fecha_viento = extract_last_value(raw_deg)
+            # Extracción paralela de valores y fechas
+            max_lluvia, f_lluvia = extract_max_value(raw_rain)
+            wind_speed, f_viento = extract_last_value(raw_wind)
+            wind_deg, f_deg = extract_last_value(raw_deg)
+            temp_val, f_temp = extract_last_value(raw_temp)
+            hum_val, f_hum = extract_last_value(raw_hum)
             
-            # Usamos la fecha del viento si la de lluvia está vacía
-            ultima_fecha = ultima_fecha_lluvia if ultima_fecha_lluvia != "OFFLINE" else ultima_fecha_viento
+            # Buscamos la fecha más reciente de los sensores que sí respondieron para mantener el status ONLINE
+            fechas_validas = [f for f in [f_lluvia, f_viento, f_deg, f_temp, f_hum] if f != "OFFLINE"]
+            ultima_fecha = max(fechas_validas) if fechas_validas else "OFFLINE"
 
             return {
                 **base_data,
@@ -411,8 +414,8 @@ class EarlyWarningSacmexAPI:
                 "acumulado_desde_6am": round(max_lluvia, 2),
                 "viento_velocidad": round(wind_speed, 1),
                 "viento_direccion": round(wind_deg, 0),
-                "temperatura_2m": 0.0,
-                "humedad_relativa": 0.0,
+                "temperatura_2m": round(temp_val, 1),
+                "humedad_relativa": round(hum_val, 0),
                 "intensidad": self.calculate_intensity(max_lluvia),
                 "auditoria": {"confianza_index": 1.0 if ultima_fecha != "OFFLINE" else 0.0, "alertas": [], "frescura_dato_segundos": 0},
                 "ultima_actualizacion": ultima_fecha,
