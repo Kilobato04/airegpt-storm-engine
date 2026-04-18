@@ -357,23 +357,22 @@ class EarlyWarningSacmexAPI:
             
             url_base = f"https://smability.sidtecmx.com/SmabilityAPI/GetData?token={token}&dtStart={dt_start}&dtEnd={dt_end}&idSensor="
             
+            # 🚨 FIX: Usamos una Sesión persistente para no asustar al Firewall
+            session = requests.Session()
+            
             def get_sensor(sensor_id):
-                res = requests.get(url_base + str(sensor_id), timeout=5)
+                res = session.get(url_base + str(sensor_id), timeout=5)
                 return res.json() if res.status_code == 200 else None
 
-            # 🚨 AMPLIAMOS A 5 WORKERS PARA TRAER EL PAQUETE METEOROLÓGICO COMPLETO
-            with ThreadPoolExecutor(max_workers=5) as ex:
-                future_r = ex.submit(get_sensor, 24) # Lluvia
-                future_w = ex.submit(get_sensor, 19) # Velocidad Viento
-                future_d = ex.submit(get_sensor, 18) # Dirección Viento
-                future_t = ex.submit(get_sensor, 12) # Temperatura
-                future_h = ex.submit(get_sensor, 3)  # Humedad
-                
-                res_rain = future_r.result()
-                res_wind = future_w.result()
-                res_deg  = future_d.result()
-                res_temp = future_t.result()
-                res_hum  = future_h.result()
+            # 🚨 FIX: Pedimos los datos 1 por 1 en fila india a través del túnel rápido
+            res_rain = get_sensor(24) # Lluvia
+            res_wind = get_sensor(19) # Velocidad Viento
+            res_deg  = get_sensor(18) # Dirección Viento
+            res_temp = get_sensor(12) # Temperatura
+            res_hum  = get_sensor(3)  # Humedad
+            
+            # Cerramos el túnel por educación
+            session.close()
 
             max_lluvia = 0
             ultima_fecha = "OFFLINE"
@@ -392,8 +391,8 @@ class EarlyWarningSacmexAPI:
                 "acumulado_desde_6am": round(max_lluvia, 2),
                 "viento_velocidad": round(wind_speed, 1),
                 "viento_direccion": round(wind_deg, 0),
-                "temperatura_2m": round(temp_val, 1),      # Nuevo campo homologado
-                "humedad_relativa": round(hum_val, 0),     # Nuevo campo homologado
+                "temperatura_2m": round(temp_val, 1),
+                "humedad_relativa": round(hum_val, 0),
                 "intensidad": self.calculate_intensity(max_lluvia),
                 "auditoria": {"confianza_index": 1.0 if ultima_fecha != "OFFLINE" else 0.0, "alertas": [], "frescura_dato_segundos": 0},
                 "ultima_actualizacion": ultima_fecha,
