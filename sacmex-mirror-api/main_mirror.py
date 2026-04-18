@@ -357,21 +357,22 @@ class EarlyWarningSacmexAPI:
             
             url_base = f"https://smability.sidtecmx.com/SmabilityAPI/GetData?token={token}&dtStart={dt_start}&dtEnd={dt_end}&idSensor="
             
-            # 🚨 FIX: Usamos una Sesión persistente para no asustar al Firewall
             session = requests.Session()
             
-            def get_sensor(sensor_id):
-                res = session.get(url_base + str(sensor_id), timeout=5)
-                return res.json() if res.status_code == 200 else None
+            def get_sensor_safe(sensor_id):
+                try:
+                    res = session.get(url_base + str(sensor_id), timeout=8)
+                    time.sleep(0.5) # 🚨 TRUCO NINJA: Pausa de medio segundo para no asustar a la API
+                    return res.json() if res.status_code == 200 else None
+                except Exception as e:
+                    self.log(f"⚠️ Micro-falla en CHAAK (Sensor {sensor_id}): {e}")
+                    return None
 
-            # 🚨 FIX: Pedimos los datos 1 por 1 en fila india a través del túnel rápido
-            res_rain = get_sensor(24) # Lluvia
-            res_wind = get_sensor(19) # Velocidad Viento
-            res_deg  = get_sensor(18) # Dirección Viento
-            res_temp = get_sensor(12) # Temperatura
-            res_hum  = get_sensor(3)  # Humedad
+            # 🚨 REDUCCIÓN TÁCTICA: Solo pedimos la Santísima Trinidad para el modelo matemático
+            res_rain = get_sensor_safe(24) # Lluvia (El Core)
+            res_wind = get_sensor_safe(19) # Velocidad Viento (Plumas)
+            res_deg  = get_sensor_safe(18) # Dirección Viento (Advección)
             
-            # Cerramos el túnel por educación
             session.close()
 
             max_lluvia = 0
@@ -382,8 +383,6 @@ class EarlyWarningSacmexAPI:
 
             wind_speed = self.float_safe(res_wind['data'][-1].get('value')) if res_wind and res_wind.get('data') else 0
             wind_deg = self.float_safe(res_deg['data'][-1].get('value')) if res_deg and res_deg.get('data') else 0
-            temp_val = self.float_safe(res_temp['data'][-1].get('value')) if res_temp and res_temp.get('data') else 0
-            hum_val  = self.float_safe(res_hum['data'][-1].get('value')) if res_hum and res_hum.get('data') else 0
 
             return {
                 **base_data,
@@ -391,8 +390,8 @@ class EarlyWarningSacmexAPI:
                 "acumulado_desde_6am": round(max_lluvia, 2),
                 "viento_velocidad": round(wind_speed, 1),
                 "viento_direccion": round(wind_deg, 0),
-                "temperatura_2m": round(temp_val, 1),
-                "humedad_relativa": round(hum_val, 0),
+                "temperatura_2m": 0.0,  # Ya no los pedimos para ahorrar red
+                "humedad_relativa": 0.0, # Ya no los pedimos para ahorrar red
                 "intensidad": self.calculate_intensity(max_lluvia),
                 "auditoria": {"confianza_index": 1.0 if ultima_fecha != "OFFLINE" else 0.0, "alertas": [], "frescura_dato_segundos": 0},
                 "ultima_actualizacion": ultima_fecha,
@@ -400,7 +399,7 @@ class EarlyWarningSacmexAPI:
             }
             
         except Exception as e:
-            self.log(f"Error en CHAAK: {e}")
+            self.log(f"❌ Error crítico en CHAAK: {e}")
             return {
                 **base_data,
                 "acumulado_actual": 0.0, "acumulado_desde_6am": 0.0,
@@ -425,19 +424,25 @@ class EarlyWarningSacmexAPI:
                     lats.append(f"{lat:.4f}")
                     lons.append(f"{lon:.4f}")
                     
-            # VENTANA MÓVIL: Cambiamos forecast_days=1 por forecast_hours=6
             horas_futuras = 6
             url = f"https://api.open-meteo.com/v1/forecast?latitude={','.join(lats)}&longitude={','.join(lons)}&hourly=temperature_2m,relative_humidity_2m,precipitation,surface_pressure,wind_speed_10m,wind_direction_10m&timezone=America%2FMexico_City&forecast_hours={horas_futuras}"
             
-            res = requests.get(url, timeout=12) # Aumenté un poco el timeout porque 100 puntos pesan
+            # 🚨 FIX: Subimos el timeout a 25s. Open-Meteo sufre armando 100 puntos.
+            res = requests.get(url, timeout=25) 
+            
+            # Imprimimos el error real si Open-Meteo nos rechaza (ej. 429 Too Many Requests)
+            if res.status_code != 200:
+                self.log(f"⚠️ Open-Meteo rechazó la petición con HTTP {res.status_code}")
+                
             res.raise_for_status()
             data = res.json()
             
             if isinstance(data, list):
                 return [{"lat": n['latitude'], "lon": n['longitude'], "hourly": n['hourly']} for n in data]
             return None
+            
         except Exception as e:
-            self.log(f"Error OpenMeteo: {e}")
+            self.log(f"❌ Error OpenMeteo: {e}")
             return None
 
     def get_forecast_data(self):
