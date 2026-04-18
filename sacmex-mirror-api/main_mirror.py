@@ -357,40 +357,63 @@ class EarlyWarningSacmexAPI:
             
             url_base = f"https://smability.sidtecmx.com/SmabilityAPI/GetData?token={token}&dtStart={dt_start}&dtEnd={dt_end}&idSensor="
             
-            # 🚨 WORKAROUND: Disfrazamos la petición como si fuera un humano en Chrome
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Accept": "application/json",
-                "Connection": "close" # Le decimos al servidor que no queremos mantener el túnel abierto
+                "Connection": "close"
             }
             
-            # 🚨 PRUEBA AISLADA: Solo pedimos el Sensor 18 (Dirección del Viento) usando un request estándar, sin Sesión.
-            res = requests.get(url_base + "18", headers=headers, timeout=10)
-            res_deg = res.json() if res.status_code == 200 else None
+            def get_sensor_data(sensor_id):
+                try:
+                    res = requests.get(url_base + str(sensor_id), headers=headers, timeout=10)
+                    time.sleep(0.5) # Respiro para el firewall IIS
+                    raw = res.json() if res.status_code == 200 else []
+                    
+                    # Extraer la lista sin importar cómo venga envuelta
+                    if isinstance(raw, dict):
+                        return raw.get('data', raw.get('Data', []))
+                    elif isinstance(raw, list):
+                        return raw
+                    return []
+                except Exception as e:
+                    self.log(f"Micro-falla en CHAAK ({sensor_id}): {e}")
+                    return []
+
+            # Pedimos los 3 sensores de la triada dinámica
+            raw_rain = get_sensor_data(24)
+            raw_wind = get_sensor_data(19)
+            raw_deg  = get_sensor_data(18)
+
+            # 🚨 FIX DE LLAVES: Parseamos usando 'Data' y 'TimeStamp'
+            def extract_last_value(sensor_list):
+                valid_data = [d for d in sensor_list if isinstance(d, dict) and 'Data' in d]
+                if valid_data:
+                    return self.float_safe(valid_data[-1].get('Data', 0)), valid_data[-1].get('TimeStamp', "OFFLINE")
+                return 0.0, "OFFLINE"
+
+            def extract_max_value(sensor_list):
+                valid_data = [d for d in sensor_list if isinstance(d, dict) and 'Data' in d]
+                if valid_data:
+                    return max([self.float_safe(d.get('Data', 0)) for d in valid_data]), valid_data[-1].get('TimeStamp', "OFFLINE")
+                return 0.0, "OFFLINE"
+
+            # Extraemos los valores
+            max_lluvia, ultima_fecha_lluvia = extract_max_value(raw_rain)
+            wind_speed, _ = extract_last_value(raw_wind)
+            wind_deg, ultima_fecha_viento = extract_last_value(raw_deg)
             
-            # Simulamos el resto en ceros mientras validamos que el Firewall nos deje pasar
-            res_rain = None
-            res_wind = None
-            res_temp = None
-            res_hum  = None
-
-            max_lluvia = 0
-            ultima_fecha = "OFFLINE"
-            if res_deg and res_deg.get('data'):
-                # Si logramos obtener los grados, usamos esa fecha para marcarla ONLINE
-                ultima_fecha = res_deg['data'][-1].get('date', "OFFLINE")
-
-            wind_deg = self.float_safe(res_deg['data'][-1].get('value')) if res_deg and res_deg.get('data') else 0
+            # Usamos la fecha del viento si la de lluvia está vacía
+            ultima_fecha = ultima_fecha_lluvia if ultima_fecha_lluvia != "OFFLINE" else ultima_fecha_viento
 
             return {
                 **base_data,
-                "acumulado_actual": 0.0,
-                "acumulado_desde_6am": 0.0,
-                "viento_velocidad": 0.0,
+                "acumulado_actual": round(max_lluvia, 2),
+                "acumulado_desde_6am": round(max_lluvia, 2),
+                "viento_velocidad": round(wind_speed, 1),
                 "viento_direccion": round(wind_deg, 0),
                 "temperatura_2m": 0.0,
                 "humedad_relativa": 0.0,
-                "intensidad": "BLANCO",
+                "intensidad": self.calculate_intensity(max_lluvia),
                 "auditoria": {"confianza_index": 1.0 if ultima_fecha != "OFFLINE" else 0.0, "alertas": [], "frescura_dato_segundos": 0},
                 "ultima_actualizacion": ultima_fecha,
                 "cache_timestamp_ISO": datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -404,11 +427,11 @@ class EarlyWarningSacmexAPI:
                 "viento_velocidad": 0.0, "viento_direccion": 0.0,
                 "temperatura_2m": 0.0, "humedad_relativa": 0.0,
                 "intensidad": "OFFLINE", 
-                "auditoria": {"confianza_index": 0.0, "alertas": [f"SENSOR APAGADO / FALLA: {str(e)[:30]}"], "frescura_dato_segundos": 999999},
+                "auditoria": {"confianza_index": 0.0, "alertas": [f"Falla: {str(e)[:30]}"], "frescura_dato_segundos": 999999},
                 "ultima_actualizacion": "OFFLINE",
                 "cache_timestamp_ISO": datetime.datetime.now(datetime.timezone.utc).isoformat()
             }
-
+            
     def fetch_open_meteo(self):
         try:
             # Cuadrícula de 100 puntos en CDMX/Edomex
