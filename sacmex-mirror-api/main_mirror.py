@@ -347,25 +347,33 @@ class EarlyWarningSacmexAPI:
         }
         try:
             token = '9b56e023d84c4c0e9af2d0ee95549392'
-            end = datetime.datetime.now()
+            
+            end = datetime.datetime.now(self.cdmx_tz)
             start = end - datetime.timedelta(minutes=15)
             
             fmt = "%Y-%m-%d %H:%M:%S"
-            url_base = f"https://smability.sidtecmx.com/SmabilityAPI/GetData?token={token}&dtStart={start.strftime(fmt)}&dtEnd={end.strftime(fmt)}&idSensor="
+            dt_start = start.strftime(fmt).replace(" ", "%20")
+            dt_end = end.strftime(fmt).replace(" ", "%20")
             
-            # Ejecución paralela para los 3 sensores
+            url_base = f"https://smability.sidtecmx.com/SmabilityAPI/GetData?token={token}&dtStart={dt_start}&dtEnd={dt_end}&idSensor="
+            
             def get_sensor(sensor_id):
                 res = requests.get(url_base + str(sensor_id), timeout=5)
                 return res.json() if res.status_code == 200 else None
 
-            with ThreadPoolExecutor(max_workers=3) as ex:
-                future_r = ex.submit(get_sensor, 24)
-                future_w = ex.submit(get_sensor, 19)
-                future_d = ex.submit(get_sensor, 18)
+            # 🚨 AMPLIAMOS A 5 WORKERS PARA TRAER EL PAQUETE METEOROLÓGICO COMPLETO
+            with ThreadPoolExecutor(max_workers=5) as ex:
+                future_r = ex.submit(get_sensor, 24) # Lluvia
+                future_w = ex.submit(get_sensor, 19) # Velocidad Viento
+                future_d = ex.submit(get_sensor, 18) # Dirección Viento
+                future_t = ex.submit(get_sensor, 12) # Temperatura
+                future_h = ex.submit(get_sensor, 3)  # Humedad
                 
                 res_rain = future_r.result()
                 res_wind = future_w.result()
-                res_deg = future_d.result()
+                res_deg  = future_d.result()
+                res_temp = future_t.result()
+                res_hum  = future_h.result()
 
             max_lluvia = 0
             ultima_fecha = "OFFLINE"
@@ -375,6 +383,8 @@ class EarlyWarningSacmexAPI:
 
             wind_speed = self.float_safe(res_wind['data'][-1].get('value')) if res_wind and res_wind.get('data') else 0
             wind_deg = self.float_safe(res_deg['data'][-1].get('value')) if res_deg and res_deg.get('data') else 0
+            temp_val = self.float_safe(res_temp['data'][-1].get('value')) if res_temp and res_temp.get('data') else 0
+            hum_val  = self.float_safe(res_hum['data'][-1].get('value')) if res_hum and res_hum.get('data') else 0
 
             return {
                 **base_data,
@@ -382,6 +392,8 @@ class EarlyWarningSacmexAPI:
                 "acumulado_desde_6am": round(max_lluvia, 2),
                 "viento_velocidad": round(wind_speed, 1),
                 "viento_direccion": round(wind_deg, 0),
+                "temperatura_2m": round(temp_val, 1),      # Nuevo campo homologado
+                "humedad_relativa": round(hum_val, 0),     # Nuevo campo homologado
                 "intensidad": self.calculate_intensity(max_lluvia),
                 "auditoria": {"confianza_index": 1.0 if ultima_fecha != "OFFLINE" else 0.0, "alertas": [], "frescura_dato_segundos": 0},
                 "ultima_actualizacion": ultima_fecha,
@@ -390,19 +402,13 @@ class EarlyWarningSacmexAPI:
             
         except Exception as e:
             self.log(f"Error en CHAAK: {e}")
-            # SALVAVIDAS: Retornar la estación en ceros para no romper el JSON
             return {
                 **base_data,
-                "acumulado_actual": 0.0,
-                "acumulado_desde_6am": 0.0,
-                "viento_velocidad": 0.0,
-                "viento_direccion": 0.0,
-                "intensidad": "OFFLINE", # Puedes cambiar esto por "0" o "NULA" si tu mapa lo prefiere
-                "auditoria": {
-                    "confianza_index": 0.0, 
-                    "alertas": ["SENSOR APAGADO / FALLA DE CONEXIÓN"], 
-                    "frescura_dato_segundos": 999999
-                },
+                "acumulado_actual": 0.0, "acumulado_desde_6am": 0.0,
+                "viento_velocidad": 0.0, "viento_direccion": 0.0,
+                "temperatura_2m": 0.0, "humedad_relativa": 0.0,
+                "intensidad": "OFFLINE", 
+                "auditoria": {"confianza_index": 0.0, "alertas": [f"SENSOR APAGADO / FALLA: {str(e)[:30]}"], "frescura_dato_segundos": 999999},
                 "ultima_actualizacion": "OFFLINE",
                 "cache_timestamp_ISO": datetime.datetime.now(datetime.timezone.utc).isoformat()
             }
