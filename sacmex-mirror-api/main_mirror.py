@@ -240,18 +240,28 @@ class EarlyWarningSacmexAPI:
     def log_to_sheets(self, stations, sys_stat):
         try:
             ahora_ms = int(time.time() * 1000)
-            frecuencia = (ahora_ms - self.cache.get('lastAttemptTime', ahora_ms)) / 1000
+            frecuencia = round((ahora_ms - self.cache.get('lastAttemptTime', ahora_ms)) / 1000, 1)
+            
             lluvias = [s['acumulado_actual'] for s in stations]
+            max_rain = max(lluvias) if lluvias else 0.0
+            
+            # Formato de fecha limpio y homologado
+            fecha_str = datetime.datetime.now(self.cdmx_tz).strftime("%d/%m/%Y, %H:%M:%S")
+            
+            # Construimos el "mini-JSON" de estaciones activas que tenías en Netlify
+            est_dict = {s['id']: s['acumulado_actual'] for s in stations if s['acumulado_actual'] > 0}
+            mini_json_estaciones = json.dumps(est_dict) if est_dict else "{}"
             
             payload = {
-                "fecha_iso": datetime.datetime.now(self.cdmx_tz).isoformat(),
+                "fecha": fecha_str,
+                "estado": sys_stat,
+                "kpi_salud": self.cache.get('redConfianzaPromedio', 0),
                 "frecuencia_muestreo": frecuencia,
-                "confianza_red": self.cache.get('redConfianzaPromedio', 0),
-                "lluvia_max": max(lluvias) if lluvias else 0,
-                "estaciones_activas": len([s for s in stations if s['acumulado_actual'] > 0]),
-                "estado_sistema": sys_stat
+                "lluvia_max": max_rain,
+                "estaciones_activas": mini_json_estaciones
             }
-            # Recuerda poner aquí la URL de tu nuevo Webhook de Apps Script
+            
+            # URL de despliegue de tu Apps Script
             requests.post('https://script.google.com/macros/s/AKfycbyUkZw2lrADxGMPJOrlLqej_6QD5e_pRS66ZmkDolZrA-vcef3o-MupM6k45t-xABYt/exec', json=payload, timeout=3)
         except Exception as e:
             self.log(f"⚠️ No se pudo enviar log a Google Sheets: {e}")
