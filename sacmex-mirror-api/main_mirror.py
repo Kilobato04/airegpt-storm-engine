@@ -240,32 +240,36 @@ class EarlyWarningSacmexAPI:
     def log_to_sheets(self, stations, sys_stat):
         try:
             ahora_ms = int(time.time() * 1000)
+            # Calculamos frecuencia con un decimal
             frecuencia = round((ahora_ms - self.cache.get('lastAttemptTime', ahora_ms)) / 1000, 1)
             
-            lluvias = [s['acumulado_actual'] for s in stations]
-            max_rain = max(lluvias) if lluvias else 0.0
+            # Aseguramos que siempre haya una lista de valores numéricos
+            lluvias = [float(s.get('acumulado_actual', 0)) for s in stations]
+            max_rain = round(max(lluvias), 2) if lluvias else 0.0
             
-            # Formato de fecha limpio y homologado
             fecha_str = datetime.datetime.now(self.cdmx_tz).strftime("%d/%m/%Y, %H:%M:%S")
             
-            # Construimos el "mini-JSON" de estaciones activas que tenías en Netlify
-            est_dict = {s['id']: s['acumulado_actual'] for s in stations if s['acumulado_actual'] > 0}
-            mini_json_estaciones = json.dumps(est_dict) if est_dict else "{}"
+            # Construimos el mini-JSON de estaciones con lluvia > 0
+            est_dict = {str(s['id']): float(s['acumulado_actual']) 
+                        for s in stations if float(s.get('acumulado_actual', 0)) > 0}
+            
+            # Forzamos que sea un string JSON para que Google no lo interprete mal
+            mini_json_str = json.dumps(est_dict) if est_dict else "{}"
             
             payload = {
                 "fecha": fecha_str,
                 "estado": sys_stat,
-                "kpi_salud": self.cache.get('redConfianzaPromedio', 0),
+                "kpi_salud": float(self.cache.get('redConfianzaPromedio', 0)),
                 "frecuencia_muestreo": frecuencia,
                 "lluvia_max": max_rain,
-                "estaciones_activas": mini_json_estaciones
+                "estaciones_activas": mini_json_str
             }
             
-            # URL de despliegue de tu Apps Script
-            requests.post('https://script.google.com/macros/s/AKfycbyUkZw2lrADxGMPJOrlLqej_6QD5e_pRS66ZmkDolZrA-vcef3o-MupM6k45t-xABYt/exec', json=payload, timeout=3)
+            # Verifica que esta URL sea la de la "Nueva Implementación"
+            requests.post('TU_URL_DE_APPS_SCRIPT', json=payload, timeout=5)
+            
         except Exception as e:
-            self.log(f"⚠️ No se pudo enviar log a Google Sheets: {e}")
-
+            self.log(f"⚠️ Error en log_to_sheets: {e}")
     
     def detect_data_changes(self, new_data):
         if not self.cache['data'] or len(self.cache['data']) != len(new_data):
