@@ -215,6 +215,10 @@ class EarlyWarningSacmexAPI:
                 
                 self.update_data_freshness()
                 self.save_persisted_cache()
+                # 🟢 AQUÍ DISPARAMOS EL LOG A GOOGLE SHEETS
+                # Solo se dispara cuando la actualización en background fue un éxito
+                estado_actual = "EARLY_WARNING_OK" if has_changed else "NO_CHANGES_DETECTED"
+                self.log_to_sheets(fresh_data, estado_actual)
             else:
                 self.cache['errorCount'] += 1
                 
@@ -233,6 +237,26 @@ class EarlyWarningSacmexAPI:
         finally:
             self.cache['isUpdating'] = False
 
+    def log_to_sheets(self, stations, sys_stat):
+        try:
+            ahora_ms = int(time.time() * 1000)
+            frecuencia = (ahora_ms - self.cache.get('lastAttemptTime', ahora_ms)) / 1000
+            lluvias = [s['acumulado_actual'] for s in stations]
+            
+            payload = {
+                "fecha_iso": datetime.datetime.now(self.cdmx_tz).isoformat(),
+                "frecuencia_muestreo": frecuencia,
+                "confianza_red": self.cache.get('redConfianzaPromedio', 0),
+                "lluvia_max": max(lluvias) if lluvias else 0,
+                "estaciones_activas": len([s for s in stations if s['acumulado_actual'] > 0]),
+                "estado_sistema": sys_stat
+            }
+            # Recuerda poner aquí la URL de tu nuevo Webhook de Apps Script
+            requests.post('https://script.google.com/macros/s/AKfycbyUkZw2lrADxGMPJOrlLqej_6QD5e_pRS66ZmkDolZrA-vcef3o-MupM6k45t-xABYt/exec', json=payload, timeout=3)
+        except Exception as e:
+            self.log(f"⚠️ No se pudo enviar log a Google Sheets: {e}")
+
+    
     def detect_data_changes(self, new_data):
         if not self.cache['data'] or len(self.cache['data']) != len(new_data):
             return True
@@ -480,6 +504,7 @@ class EarlyWarningSacmexAPI:
             
         return alerts
 
+
     def build_response(self, stations, is_cache, cache_status='fresh'):
         if not stations: return self.build_emergency_response()
         
@@ -491,16 +516,6 @@ class EarlyWarningSacmexAPI:
         sys_stat = 'EARLY_WARNING_OK'
         if self.cache['dataFreshness'] == 'fresh': sys_stat = 'EARLY_WARNING_OPTIMAL'
         elif self.cache['dataFreshness'] == 'critical': sys_stat = 'EARLY_WARNING_COMPROMISED'
-        
-        hora_local = datetime.datetime.now(self.cdmx_tz).strftime("%Y-%m-%d %H:%M:%S")
-
-        # LOGGER GOOGLE SHEETS
-        try:
-            est_llov = [f"{s['id']}:{s['acumulado_actual']}mm" for s in stations if s['acumulado_actual'] > 0]
-            payload = {"fecha": hora_local, "estado": sys_stat, "lluvia_max": max_rain, "estaciones_activas": ", ".join(est_llov) if est_llov else "Sin lluvia"}
-            requests.post('https://script.google.com/macros/s/AKfycbz7NqID0vlq2DtwOXYcXjWRqLeh7Gy15ep8fjH86LLHVCHSOKLkoLe8_sXZpWjjUCpE/exec', json=payload, timeout=3)
-        except:
-            pass
 
         return {
             "success": True,
