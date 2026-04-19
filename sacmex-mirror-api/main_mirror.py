@@ -266,7 +266,7 @@ class EarlyWarningSacmexAPI:
             }
             
             # Verifica que esta URL sea la de la "Nueva Implementación"
-            requests.post('TU_URL_DE_APPS_SCRIPT', json=payload, timeout=5)
+            requests.post('https://script.google.com/macros/s/AKfycbyUkZw2lrADxGMPJOrlLqej_6QD5e_pRS66ZmkDolZrA-vcef3o-MupM6k45t-xABYt/exec', json=payload, timeout=5)
             
         except Exception as e:
             self.log(f"⚠️ Error en log_to_sheets: {e}")
