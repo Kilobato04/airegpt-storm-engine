@@ -176,28 +176,34 @@ def lambda_handler(event, context):
 
         lluvia_activa = [s for s in estaciones if float(s['acumulado_actual']) > 0]
         
-        if len(lluvia_activa) < 2:
-             print("💤 ESTADO SLEEP: Menos de 2 estaciones con lluvia.")
-             return {"statusCode": 200, "body": "SLEEP - Sin lluvia suficiente"}
-
-        print(f"⛈️ ESTADO ACTIVO: {len(lluvia_activa)} estaciones con lluvia.")
-        
+        # 1. Leemos S3 PRIMERO para saber el estado actual del mapa
         try:
             response = s3_client.get_object(Bucket=S3_BUCKET, Key=S3_KEY_LATEST)
             estado_previo = json.loads(response['Body'].read().decode('utf-8'))
-            max_rain_previo = estado_previo.get('metadata', {}).get('lluvia_max', 0)
+            max_rain_previo = float(estado_previo.get('metadata', {}).get('lluvia_max', 0.0))
             fecha_previa = datetime.datetime.fromisoformat(estado_previo.get('timestamp'))
         except Exception:
-            max_rain_previo = 0
+            max_rain_previo = 0.0
             fecha_previa = ahora - datetime.timedelta(minutes=3)
 
-        # Aseguramos que el DataFrame siempre tenga columnas, incluso si no hay lluvia
-        if lluvia_activa:
+        # 2. Lógica Inteligente de Reposo / Limpieza
+        if len(lluvia_activa) < 2:
+            if max_rain_previo > 0.0:
+                print("🧹 FIN DE TORMENTA: Limpiando mapa (Subiendo modelo en cero a S3)...")
+                # Dejamos que el código continúe para que escriba ceros
+            else:
+                print("💤 ESTADO SLEEP: Sin lluvia y el mapa ya está limpio.")
+                return {"statusCode": 200, "body": "SLEEP - Mapa ya en cero"}
+        else:
+            print(f"⛈️ ESTADO ACTIVO: {len(lluvia_activa)} estaciones con lluvia.")
+
+        # 3. Preparación de Datos
+        if len(lluvia_activa) >= 2:
             df_obs = pd.DataFrame([{
                 'id': s['id'], 'nombre': s['nombre'], 'lat': float(s['latitud']),
                 'lon': float(s['longitud']), 'rain': float(s['acumulado_actual'])
             } for s in lluvia_activa])
-            max_rain_actual = df_obs['rain'].max()
+            max_rain_actual = float(df_obs['rain'].max())
         else:
             df_obs = pd.DataFrame(columns=['id', 'nombre', 'lat', 'lon', 'rain'])
             max_rain_actual = 0.0
@@ -214,12 +220,16 @@ def lambda_handler(event, context):
 
         print(f"📈 Derivada: {derivada:.2f} mm/min | Alerta: {alerta_status}")
 
-        grid['rain_predicted'] = ejecutar_interpolacion(df_obs, grid)
+        # 4. Cálculo Espacial Protegido
+        if max_rain_actual > 0:
+            grid['rain_predicted'] = ejecutar_interpolacion(df_obs, grid)
+        else:
+            grid['rain_predicted'] = 0.0
         
         output_cells = []
         tree = cKDTree(grid[['lat', 'lon']].values)
         
-        # 1. Inicializamos las 3,000 celdas por defecto (Asumiendo que son interpolación)
+        # 5. Inicializamos las 3,000 celdas
         for idx, row in grid.iterrows():
             rain_val = row['rain_predicted']
             output_cells.append({
@@ -235,7 +245,7 @@ def lambda_handler(event, context):
                 "source": "Modelo Espacial (RBF)"
             })
 
-        # 2. Planchamos TODAS las estaciones sobre la malla (llueva o no)
+        # 6. Planchamos TODAS las estaciones sobre la malla (llueva o no)
         for s in estaciones:
             try:
                 s_lat = float(s['latitud'])
@@ -246,7 +256,6 @@ def lambda_handler(event, context):
                 nombre_est = str(s.get('nombre', ''))
                 id_est = str(s.get('id', ''))
                 
-                # Diferenciar fuentes de datos
                 if 'chaak' in nombre_est.lower() or 'smability' in nombre_est.lower():
                     origen = "Sensor Activo (Red Smability)"
                 else:
@@ -257,7 +266,7 @@ def lambda_handler(event, context):
                     "source": origen
                 })
 
-                # 3. Si además está lloviendo en esta estación, forzamos la realidad dura y las alertas
+                # Si además está lloviendo, forzamos la realidad dura
                 if s_rain > 0:
                     output_cells[closest_idx]["rain_mm_h"] = float(s_rain)
                     output_cells[closest_idx]["risk"] = "Crítico" if alerta_status != "NORMAL" else "Moderado"
