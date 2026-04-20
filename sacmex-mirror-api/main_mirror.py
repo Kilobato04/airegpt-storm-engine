@@ -1,4 +1,5 @@
 import json
+import boto3
 import os
 import time
 import datetime
@@ -219,6 +220,10 @@ class EarlyWarningSacmexAPI:
                 # Solo se dispara cuando la actualización en background fue un éxito
                 estado_actual = "EARLY_WARNING_OK" if has_changed else "NO_CHANGES_DETECTED"
                 self.log_to_sheets(fresh_data, estado_actual)
+                # 🟢 NUEVO: DESACOPLAMIENTO S3
+                # Construimos la respuesta completa y la subimos
+                payload_s3 = self.build_response(fresh_data, False, 'fresh_background_update')
+                self.upload_to_s3(payload_s3)
             else:
                 self.cache['errorCount'] += 1
                 
@@ -237,6 +242,29 @@ class EarlyWarningSacmexAPI:
         finally:
             self.cache['isUpdating'] = False
 
+    def upload_to_s3(self, response_payload):
+        try:
+            s3 = boto3.client('s3')
+            # 🚨 CAMBIA ESTO por el nombre exacto de tu bucket
+            bucket_name = 'airegpt-storm-data' 
+            
+            # S3 requiere un string formateado, no un diccionario de Python
+            body_data = json.dumps(response_payload)
+            
+            s3.put_object(
+                Bucket=bucket_name,
+                Key='latest_sacmex.json',
+                Body=body_data,
+                ContentType='application/json',
+                # 🚨 CRÍTICO: Esto evita que el navegador del usuario guarde un archivo viejo
+                CacheControl='max-age=0, no-cache, no-store, must-revalidate',
+                # Si tu bucket no usa ACLs públicas, borra la siguiente línea
+                ACL='public-read' 
+            )
+            self.log("☁️ S3 UPDATE: latest_sacmex.json subido exitosamente.")
+        except Exception as e:
+            self.log(f"❌ Error subiendo a S3: {e}")
+    
     def log_to_sheets(self, stations, sys_stat):
         try:
             ahora_ms = int(time.time() * 1000)
