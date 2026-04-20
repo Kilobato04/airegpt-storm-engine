@@ -490,44 +490,6 @@ class EarlyWarningSacmexAPI:
                 "ultima_actualizacion": "OFFLINE",
                 "cache_timestamp_ISO": datetime.datetime.now(datetime.timezone.utc).isoformat()
             }
-            
-    def fetch_open_meteo(self):
-        try:
-            # Cuadrícula de 100 puntos en CDMX/Edomex
-            latS, latN, lonW, lonE = 19.155, 19.772, -99.352, -98.867
-            steps = 9
-            lats, lons = [], []
-            for i in range(steps + 1):
-                lat = latS + (i * (latN - latS) / steps)
-                for j in range(steps + 1):
-                    lon = lonW + (j * (lonE - lonW) / steps)
-                    lats.append(f"{lat:.4f}")
-                    lons.append(f"{lon:.4f}")
-                    
-            horas_futuras = 6
-            url = f"https://api.open-meteo.com/v1/forecast?latitude={','.join(lats)}&longitude={','.join(lons)}&hourly=temperature_2m,relative_humidity_2m,precipitation,surface_pressure,wind_speed_10m,wind_direction_10m&timezone=America%2FMexico_City&forecast_hours={horas_futuras}"
-            
-            # 🚨 FIX: Subimos el timeout a 25s. Open-Meteo sufre armando 100 puntos.
-            res = requests.get(url, timeout=25) 
-            
-            # Imprimimos el error real si Open-Meteo nos rechaza (ej. 429 Too Many Requests)
-            if res.status_code != 200:
-                self.log(f"⚠️ Open-Meteo rechazó la petición con HTTP {res.status_code}")
-                
-            res.raise_for_status()
-            data = res.json()
-            
-            if isinstance(data, list):
-                return [{"lat": n['latitude'], "lon": n['longitude'], "hourly": n['hourly']} for n in data]
-            return None
-            
-        except Exception as e:
-            self.log(f"❌ Error OpenMeteo: {e}")
-            return None
-
-    def get_forecast_data(self):
-        grid = self.fetch_open_meteo()
-        return {"success": True, "data": grid} if grid else {"success": False, "error": "Error Open-Meteo"}
 
     def generate_weather_alerts(self, stations, max_rain):
         alerts = []
