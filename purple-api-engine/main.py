@@ -154,7 +154,7 @@ def lambda_handler(event, context):
         }
 
         try:
-            for i in range(1, 6):
+            for i in range(0, 6):
                 datos_hora = []
                 hora_iso = ""
                 for p in forecast_raw:
