@@ -51,7 +51,7 @@ def fetch_open_meteo():
                 lats.append(f"{lat:.4f}")
                 lons.append(f"{lon:.4f}")
                 
-        horas_futuras = 6
+        horas_futuras = 12
         url = f"https://api.open-meteo.com/v1/forecast?latitude={','.join(lats)}&longitude={','.join(lons)}&hourly=temperature_2m,relative_humidity_2m,precipitation,surface_pressure,wind_speed_10m,wind_direction_10m&timezone=America%2FMexico_City&forecast_hours={horas_futuras}"
         
         res = requests.get(url, timeout=25) 
@@ -118,19 +118,38 @@ def lambda_handler(event, context):
     # CASO A: PRONÓSTICO (Cada 1 hora)
     # ==========================================
     if es_trabajo_pronostico:
-        print("🔮 Iniciando Proyección de Forecast (6 horas)...")
+        print("🔮 Iniciando Proyección de Forecast...")
         
-        # 🚨 NUEVO: Llamada directa a Open-Meteo, ya no dependemos de Lambda A
+        # 🚨 Llamada directa a Open-Meteo (recuerda que arriba le pusimos 12 horas)
         forecast_raw = fetch_open_meteo()
 
         if not forecast_raw:
             print("🛑 Fallo total al recuperar datos. Abortando forecast.")
             return {"statusCode": 500, "body": "Fallo al obtener datos de Open-Meteo."}
 
+        # 🚨 FIX DE HORA EXACTA (Sincronización con Reloj CDMX) 🚨
+        # 1. Obtenemos la hora actual real truncada a la hora (ej. 16:20 -> 16:00)
+        ahora_cdmx = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=6)
+        hora_actual_str = ahora_cdmx.strftime("%Y-%m-%dT%H:00")
+        
+        # 2. Buscamos en qué índice del array de Open-Meteo está esa hora
+        tiempos = forecast_raw[0]['hourly']['time']
+        idx_start = 0
+        for i, t in enumerate(tiempos):
+            if t >= hora_actual_str:
+                idx_start = i
+                break
+        
+        # 3. Recortamos TODOS los nodos para que el array tenga exactamente 6 horas
+        for p in forecast_raw:
+            for key in p['hourly']:
+                p['hourly'][key] = p['hourly'][key][idx_start:idx_start+6]
+
+        # 4. Preparamos el payload
         bloque_futuro = {
             "generated_at": ahora.isoformat(), 
             "time_steps": {},
-            "raw_nodes": forecast_raw 
+            "raw_nodes": forecast_raw
         }
 
         try:
@@ -140,7 +159,7 @@ def lambda_handler(event, context):
                 for p in forecast_raw:
                     hora_iso = p['hourly']['time'][i]
                     datos_hora.append({'lat': p['lat'], 'lon': p['lon'], 'rain': p['hourly']['precipitation'][i]})
-                
+                              
                 print(f"⏳ Calculando IA Espacial para: {hora_iso}...")
                 df_h = pd.DataFrame(datos_hora)
                 lluvia_proyectada = ejecutar_interpolacion(df_h, grid)
