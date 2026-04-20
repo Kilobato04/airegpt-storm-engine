@@ -127,7 +127,11 @@ def lambda_handler(event, context):
             print("🛑 Fallo total al recuperar datos. Abortando forecast.")
             return {"statusCode": 500, "body": "Fallo al obtener datos de Open-Meteo."}
 
-        bloque_futuro = {"generated_at": ahora.isoformat(), "time_steps": {}}
+        bloque_futuro = {
+            "generated_at": ahora.isoformat(), 
+            "time_steps": {},
+            "raw_nodes": forecast_raw 
+        }
 
         try:
             for i in range(1, 6):
