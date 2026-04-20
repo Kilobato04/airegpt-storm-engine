@@ -258,8 +258,6 @@ class EarlyWarningSacmexAPI:
                 ContentType='application/json',
                 # 🚨 CRÍTICO: Esto evita que el navegador del usuario guarde un archivo viejo
                 CacheControl='max-age=0, no-cache, no-store, must-revalidate',
-                # Si tu bucket no usa ACLs públicas, borra la siguiente línea
-                ACL='public-read' 
             )
             self.log("☁️ S3 UPDATE: latest_sacmex.json subido exitosamente.")
         except Exception as e:
