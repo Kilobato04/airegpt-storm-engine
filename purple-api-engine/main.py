@@ -37,6 +37,39 @@ def ejecutar_interpolacion(df_puntos, malla_base):
         vals[dist < 0.02] = df_puntos['rain'].max()
         return vals
 
+def fetch_open_meteo():
+    """Genera la malla de 100 nodos y descarga el pronóstico de Open-Meteo"""
+    try:
+        print("🌐 Construyendo malla de 100 nodos para Open-Meteo...")
+        latS, latN, lonW, lonE = 19.155, 19.772, -99.352, -98.867
+        steps = 9
+        lats, lons = [], []
+        for i in range(steps + 1):
+            lat = latS + (i * (latN - latS) / steps)
+            for j in range(steps + 1):
+                lon = lonW + (j * (lonE - lonW) / steps)
+                lats.append(f"{lat:.4f}")
+                lons.append(f"{lon:.4f}")
+                
+        horas_futuras = 6
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={','.join(lats)}&longitude={','.join(lons)}&hourly=temperature_2m,relative_humidity_2m,precipitation,surface_pressure,wind_speed_10m,wind_direction_10m&timezone=America%2FMexico_City&forecast_hours={horas_futuras}"
+        
+        res = requests.get(url, timeout=25) 
+        if res.status_code != 200:
+            print(f"⚠️ Open-Meteo rechazó la petición con HTTP {res.status_code}")
+            
+        res.raise_for_status()
+        data = res.json()
+        
+        if isinstance(data, list):
+            print("✅ Datos de Open-Meteo descargados con éxito.")
+            return [{"lat": n['latitude'], "lon": n['longitude'], "hourly": n['hourly']} for n in data]
+        return None
+        
+    except Exception as e:
+        print(f"❌ Error OpenMeteo: {e}")
+        return None
+
 def lambda_handler(event, context):
     
     # ==========================================
@@ -86,31 +119,13 @@ def lambda_handler(event, context):
     # ==========================================
     if es_trabajo_pronostico:
         print("🔮 Iniciando Proyección de Forecast (6 horas)...")
-        forecast_raw = []
         
-        # 🚨 FIX: 3 Reintentos con Timeouts largos para no ahorcar a la Lambda A
-        for intento in range(3):
-            try:
-                print(f"📡 Solicitando datos a Mirror API (Intento {intento + 1}/3)...")
-                # Damos 30 segundos de paciencia a Lambda A
-                req_f = requests.get(f"{MIRROR_API_URL}forecast", timeout=30)
-                if req_f.status_code == 200:
-                    forecast_raw = req_f.json().get('data', [])
-                    if forecast_raw:
-                        print("✅ Datos de forecast recibidos con éxito.")
-                        break # Salir del loop si tuvimos éxito
-                else:
-                    print(f"⚠️ Mirror API devolvió Status Code: {req_f.status_code}")
-            except requests.exceptions.Timeout:
-                print(f"⏱️ TIMEOUT: La Mirror API tardó más de 30 segundos en el intento {intento + 1}")
-            except Exception as e:
-                print(f"❌ Error conectando a Mirror API: {e}")
-            
-            time.sleep(2) # Esperar 2 segundos antes de reintentar
+        # 🚨 NUEVO: Llamada directa a Open-Meteo, ya no dependemos de Lambda A
+        forecast_raw = fetch_open_meteo()
 
         if not forecast_raw:
             print("🛑 Fallo total al recuperar datos. Abortando forecast.")
-            return {"statusCode": 500, "body": "Fallo al obtener datos de Open-Meteo tras 3 intentos."}
+            return {"statusCode": 500, "body": "Fallo al obtener datos de Open-Meteo."}
 
         bloque_futuro = {"generated_at": ahora.isoformat(), "time_steps": {}}
 
@@ -134,7 +149,7 @@ def lambda_handler(event, context):
             # Si sobrevivió a las 5 horas, sube a S3
             s3_client.put_object(
                 Bucket=S3_BUCKET, Key=S3_KEY_FORECAST,
-                Body=json.dumps(bloque_futuro), ContentType='application/json'
+                Body=json.dumps(bloque_futuro), ContentType='application/json', CacheControl='max-age=300'
             )
             print("✅ Pronóstico guardado en S3 exitosamente.")
             return {"statusCode": 200, "body": "Forecast Updated"}
