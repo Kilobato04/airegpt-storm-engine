@@ -128,15 +128,16 @@ def lambda_handler(event, context):
             return {"statusCode": 500, "body": "Fallo al obtener datos de Open-Meteo."}
 
         # 🚨 FIX DE HORA EXACTA (Sincronización con Reloj CDMX) 🚨
-        # 1. Obtenemos la hora actual real truncada a la hora (ej. 16:20 -> 16:00)
+        # 1. Obtenemos la hora actual y forzamos el salto a la SIGUIENTE hora en punto
         ahora_cdmx = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=6)
-        hora_actual_str = ahora_cdmx.strftime("%Y-%m-%dT%H:00")
+        proxima_hora = ahora_cdmx + datetime.timedelta(hours=1)
+        hora_arranque_str = proxima_hora.strftime("%Y-%m-%dT%H:00")
         
-        # 2. Buscamos en qué índice del array de Open-Meteo está esa hora
+        # 2. Buscamos en qué índice del array está esa próxima hora (ej. 17:00)
         tiempos = forecast_raw[0]['hourly']['time']
         idx_start = 0
         for i, t in enumerate(tiempos):
-            if t >= hora_actual_str:
+            if t >= hora_arranque_str:
                 idx_start = i
                 break
         
