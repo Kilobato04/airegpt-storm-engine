@@ -140,23 +140,22 @@ def lambda_handler(event, context):
             return {"statusCode": 500, "body": "Fallo al obtener datos de Open-Meteo."}
 
         # 🚨 FIX DE HORA EXACTA (Sincronización con Reloj CDMX) 🚨
-        # 1. Obtenemos la hora actual y forzamos el salto a la SIGUIENTE hora en punto
+        # 1. Truncamos a la hora actual exacta (EJ: 17:35 -> 17:00)
         ahora_cdmx = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=6)
-        proxima_hora = ahora_cdmx + datetime.timedelta(hours=1)
-        hora_arranque_str = proxima_hora.strftime("%Y-%m-%dT%H:00")
+        hora_actual_str = ahora_cdmx.strftime("%Y-%m-%dT%H:00")
         
-        # 2. Buscamos en qué índice del array está esa próxima hora (ej. 17:00)
+        # 2. Buscamos el índice de esa hora actual (ej. 17:00) en los datos de Open-Meteo
         tiempos = forecast_raw[0]['hourly']['time']
         idx_start = 0
         for i, t in enumerate(tiempos):
-            if t >= hora_arranque_str:
+            if t >= hora_actual_str:
                 idx_start = i
                 break
         
-        # 3. Recortamos TODOS los nodos para que el array tenga exactamente 6 horas
+        # 3. Recortamos a 7 horas (Índice 0 = ACTUAL, Índices 1 al 6 = FUTURO)
         for p in forecast_raw:
             for key in p['hourly']:
-                p['hourly'][key] = p['hourly'][key][idx_start:idx_start+6]
+                p['hourly'][key] = p['hourly'][key][idx_start:idx_start+7]
 
         # 4. Preparamos el payload
         bloque_futuro = {
@@ -166,13 +165,15 @@ def lambda_handler(event, context):
         }
 
         try:
-            for i in range(0, 6):
+            # 5. El Motor IA calcula desde el Índice 1 (ej. 18:00) hasta el 6 (ej. 23:00)
+            # El paso 0 lo saltamos porque es el "Presente" que ya tienes en el otro modelo.
+            for i in range(1, 7): 
                 datos_hora = []
                 hora_iso = ""
                 for p in forecast_raw:
                     hora_iso = p['hourly']['time'][i]
                     datos_hora.append({'lat': p['lat'], 'lon': p['lon'], 'rain': p['hourly']['precipitation'][i]})
-                              
+                
                 print(f"⏳ Calculando IA Espacial para: {hora_iso}...")
                 df_h = pd.DataFrame(datos_hora)
                 lluvia_proyectada = ejecutar_interpolacion(df_h, grid)
@@ -182,13 +183,13 @@ def lambda_handler(event, context):
                     for idx in range(len(lluvia_proyectada)) if lluvia_proyectada[idx] > 0
                 ]
 
-            # Si sobrevivió a las 5 horas, sube a S3
+            # 6. Subida final a S3
             s3_client.put_object(
                 Bucket=S3_BUCKET, Key=S3_KEY_FORECAST,
                 Body=json.dumps(bloque_futuro), ContentType='application/json', CacheControl='max-age=300'
             )
             print("✅ Pronóstico guardado en S3 exitosamente.")
-            return {"statusCode": 200, "body": "Forecast Updated"}
+            return {"statusCode": 200, "body": "Forecast Updated Successfully"}
             
         except Exception as e:
             print(f"❌ ERROR FATAL en el cálculo del forecast: {str(e)}")
