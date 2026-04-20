@@ -38,7 +38,7 @@ def ejecutar_interpolacion(df_puntos, malla_base):
         return vals
 
 def fetch_open_meteo():
-    """Genera la malla de 100 nodos y descarga el pronóstico de Open-Meteo"""
+    """Genera la malla de 100 nodos y descarga el pronóstico de Open-Meteo con Reintentos"""
     try:
         print("🌐 Construyendo malla de 100 nodos para Open-Meteo...")
         latS, latN, lonW, lonE = 19.155, 19.772, -99.352, -98.867
@@ -54,20 +54,32 @@ def fetch_open_meteo():
         horas_futuras = 12
         url = f"https://api.open-meteo.com/v1/forecast?latitude={','.join(lats)}&longitude={','.join(lons)}&hourly=temperature_2m,relative_humidity_2m,precipitation,surface_pressure,wind_speed_10m,wind_direction_10m&timezone=America%2FMexico_City&forecast_hours={horas_futuras}"
         
-        res = requests.get(url, timeout=25) 
-        if res.status_code != 200:
-            print(f"⚠️ Open-Meteo rechazó la petición con HTTP {res.status_code}")
-            
-        res.raise_for_status()
-        data = res.json()
+        # 🚨 SISTEMA DE REINTENTOS PARA RESILIENCIA 🚨
+        for intento in range(2):
+            try:
+                print(f"📡 Solicitando Open-Meteo (Intento {intento + 1}/2)...")
+                res = requests.get(url, timeout=25) 
+                
+                if res.status_code != 200:
+                    print(f"⚠️ Open-Meteo rechazó la petición con HTTP {res.status_code}")
+                    
+                res.raise_for_status()
+                data = res.json()
+                
+                if isinstance(data, list):
+                    print("✅ Datos de Open-Meteo descargados con éxito.")
+                    return [{"lat": n['latitude'], "lon": n['longitude'], "hourly": n['hourly']} for n in data]
+                
+            except Exception as e:
+                print(f"⚠️ Micro-falla en intento {intento + 1}: {e}")
+                if intento < 1: # Solo duerme si va a haber un segundo intento
+                    time.sleep(2)
         
-        if isinstance(data, list):
-            print("✅ Datos de Open-Meteo descargados con éxito.")
-            return [{"lat": n['latitude'], "lon": n['longitude'], "hourly": n['hourly']} for n in data]
+        print("❌ Error Fatal: Open-Meteo falló después de todos los reintentos.")
         return None
         
     except Exception as e:
-        print(f"❌ Error OpenMeteo: {e}")
+        print(f"❌ Error crítico en fetch_open_meteo: {e}")
         return None
 
 def lambda_handler(event, context):
@@ -188,10 +200,13 @@ def lambda_handler(event, context):
     else:
         print("🚀 Iniciando Motor de Lluvia Actual...")
         try:
-            req = requests.get(MIRROR_API_URL, timeout=10)
+            # 🚨 FIX: Subimos a 15s de tolerancia para darle tiempo a Lambda A
+            req = requests.get(MIRROR_API_URL, timeout=15)
             api_data = req.json()
             estaciones = api_data.get('data', [])
         except Exception as e:
+            # 🚨 FIX: Imprimimos el error para que quede registrado en los logs de CloudWatch
+            print(f"❌ Error crítico leyendo API Espejo: {e}")
             return {"statusCode": 500, "body": f"Error leyendo API Espejo: {e}"}
 
         lluvia_activa = [s for s in estaciones if float(s['acumulado_actual']) > 0]
