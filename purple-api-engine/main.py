@@ -102,11 +102,9 @@ def fetch_open_meteo():
         return None
 
 def lambda_handler(event, context):
-    
     # ==========================================
-    # --- 0. INTERCEPTOR HTTP (API PARA FRONTEND MAPAS) ---
+    # --- 0. PROXY S3 (Vía Rápida para el Frontend) ---
     # ==========================================
-    # Si el evento trae 'rawPath', significa que entraron por la Function URL
     ruta_web = event.get('rawPath', event.get('path'))
     
     if ruta_web:
@@ -116,35 +114,33 @@ def lambda_handler(event, context):
             'Cache-Control': 'public, max-age=60'
         }
         try:
-            # Si en la URL escribieron /forecast, damos la malla de 3000 celdas del futuro
-            if '/forecast' in ruta_web:
-                resp = s3_client.get_object(Bucket=S3_BUCKET, Key=S3_KEY_FORECAST)
-                return {"statusCode": 200, "headers": headers, "body": resp['Body'].read().decode('utf-8')}
+            # Determinamos qué archivo quiere el mapa (Forecast o Presente)
+            target_key = S3_KEY_FORECAST if '/forecast' in ruta_web else S3_KEY_LATEST
             
-            # Si entran a la raíz (/), damos la malla del presente
-            else:
-                resp = s3_client.get_object(Bucket=S3_BUCKET, Key=S3_KEY_LATEST)
-                return {"statusCode": 200, "headers": headers, "body": resp['Body'].read().decode('utf-8')}
-        
+            # Vamos directo al buzón (S3)
+            resp = s3_client.get_object(Bucket=S3_BUCKET, Key=target_key)
+            return {
+                "statusCode": 200, 
+                "headers": headers, 
+                "body": resp['Body'].read().decode('utf-8')
+            }
         except Exception as e:
-            return {"statusCode": 500, "headers": headers, "body": json.dumps({"error": "Archivo no encontrado en S3", "details": str(e)})}
+            print(f"⚠️ Error en Proxy S3: {e}")
+            return {"statusCode": 404, "headers": headers, "body": json.dumps({"error": "Data not ready"})}
 
     # ==========================================
-    # --- LÓGICA DEL MOTOR (CRON JOBS DE EVENTBRIDGE) ---
+    # --- MOTOR DE CÁLCULO (Sólo Cron/Test) ---
     # ==========================================
-    # (Si no hay ruta_web, ignoramos el interceptor y corremos el motor normal)
+    # Si la ejecución sigue aquí, es porque toca procesar la ciencia de datos.
+    print("🧠 Iniciando Motor de IA...")
     
-    ahora = datetime.datetime.now(datetime.timezone.utc)
-    es_trabajo_pronostico = event.get('action') == 'run_forecast'
-    
-    # --- CARGA GEOMETRÍA (BYPASS FIONA) ---
+    # Carga de geometría (esto es lo que tarda, por eso lo alejamos de la ruta web)
     with open(GEOJSON_PATH, 'r', encoding='utf-8') as f:
         malla_json = json.load(f)
         
     grid = gpd.GeoDataFrame.from_features(malla_json['features'])
     grid['lon'] = grid.geometry.x
     grid['lat'] = grid.geometry.y
-
     # ==========================================
     # CASO A: PRONÓSTICO (Cada 1 hora)
     # ==========================================
@@ -218,29 +214,21 @@ def lambda_handler(event, context):
     # CASO B: PRESENTE (Cada 3 minutos)
     # ==========================================
     else:
-        print("🚀 Iniciando Motor de Lluvia Actual...")
+        print("🚀 Iniciando Motor de Lluvia Actual (Modo S3-Direct)...")
         try:
-            # 🛡️ SISTEMA ANTIFALLOS: 2 Intentos y Timeout extendido
-            for i in range(2):
-                try:
-                    print(f"📡 Conectando con API Espejo (Intento {i+1}/2)...")
-                    req = requests.get(MIRROR_API_URL, timeout=20) # Subimos a 20s
-                    req.raise_for_status()
-                    api_data = req.json()
-                    estaciones = api_data.get('data', [])
-                    print(f"✅ Datos recibidos de la API Espejo.")
-                    break # Éxito: Salimos del bucle de reintentos
-                except Exception as e:
-                    if i == 1: raise e # Si falla el segundo intento, lanzamos el error al log
-                    print(f"⚠️ Reintentando conexión con Espejo por lentitud: {e}")
-                    time.sleep(1) # Un segundo de respiro
+            # 🚨 SUSTITUCIÓN: En lugar de requests.get, leemos el buzón de S3
+            print("📡 Obteniendo datos crudos desde S3 (latest_sacmex.json)...")
+            res_s3 = s3_client.get_object(Bucket=S3_BUCKET, Key="latest_sacmex.json")
+            api_data = json.loads(res_s3['Body'].read().decode('utf-8'))
+            estaciones = api_data.get('data', [])
+            print(f"✅ Datos recuperados exitosamente de S3.")
         except Exception as e:
-            print(f"❌ Error crítico tras reintentos en API Espejo: {e}")
-            return {"statusCode": 500, "body": f"Fallo de conexión Espejo: {str(e)}"}
+            print(f"❌ Error crítico leyendo origen en S3: {e}")
+            return {"statusCode": 500, "body": f"Error de lectura S3: {str(e)}"}
 
         lluvia_activa = [s for s in estaciones if float(s['acumulado_actual']) > 0]
         
-        # 1. Leemos S3 PRIMERO para saber el estado actual del mapa
+        # 1. Leemos el modelo previo de S3 para la derivada
         try:
             response = s3_client.get_object(Bucket=S3_BUCKET, Key=S3_KEY_LATEST)
             estado_previo = json.loads(response['Body'].read().decode('utf-8'))
@@ -250,14 +238,14 @@ def lambda_handler(event, context):
             max_rain_previo = 0.0
             fecha_previa = ahora - datetime.timedelta(minutes=3)
 
-        # 2. Lógica Inteligente de Reposo / Limpieza
+        # 2. Tu Lógica de Reposo (Manteniendo N < 2)
         if len(lluvia_activa) < 2:
             if max_rain_previo > 0.0:
-                print("🧹 FIN DE TORMENTA: Limpiando mapa (Subiendo modelo en cero a S3)...")
-                # Dejamos que el código continúe para que escriba ceros
+                print("🧹 FIN DE TORMENTA: Limpiando mapa...")
+                # Dejamos que el código siga para que escriba la malla en ceros
             else:
-                print("💤 ESTADO SLEEP: Sin lluvia y el mapa ya está limpio.")
-                return {"statusCode": 200, "body": "SLEEP - Mapa ya en cero"}
+                print("💤 ESTADO SLEEP: Mapa ya en cero.")
+                return {"statusCode": 200, "body": "SLEEP"}
         else:
             print(f"⛈️ ESTADO ACTIVO: {len(lluvia_activa)} estaciones con lluvia.")
 
