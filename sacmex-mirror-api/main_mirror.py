@@ -443,7 +443,7 @@ class EarlyWarningSacmexAPI:
                     return []
 
             # 🚨 SOLO LOS 3 CRÍTICOS PARA CFD (Dinámica de Fluidos)
-            raw_rain = get_sensor_data(24) # Lluvia
+            raw_rain = get_sensor_data(23) # Intensidad Lluvia
             raw_wind = get_sensor_data(19) # Velocidad Viento
             raw_deg  = get_sensor_data(18) # Dirección Viento
 
