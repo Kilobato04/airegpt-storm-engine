@@ -38,7 +38,7 @@ def ejecutar_interpolacion(df_puntos, malla_base):
         return vals
 
 def fetch_open_meteo():
-    """Descarga el pronóstico dividiendo los 100 puntos en lotes para evitar error 502"""
+    """Descarga el pronóstico en micro-lotes para evitar el Error 502 de Open-Meteo en horas pico"""
     try:
         print("🌐 Generando malla de 100 puntos...")
         latS, latN, lonW, lonE = 19.155, 19.772, -99.352, -98.867
@@ -50,8 +50,8 @@ def fetch_open_meteo():
                 lon = lonW + (j * (lonE - lonW) / steps)
                 all_coords.append((f"{lat:.4f}", f"{lon:.4f}"))
         
-        # 🚨 DIVISIÓN EN LOTES (Batching)
-        size = 20 # 20 puntos por petición
+        # 🚨 FIX 1: Lotes más pequeños (10 en vez de 20)
+        size = 10 
         chunks = [all_coords[i:i + size] for i in range(0, len(all_coords), size)]
         full_results = []
         
@@ -62,15 +62,15 @@ def fetch_open_meteo():
             lons = [c[1] for c in chunk]
             url = f"https://api.open-meteo.com/v1/forecast?latitude={','.join(lats)}&longitude={','.join(lons)}&hourly=temperature_2m,relative_humidity_2m,precipitation,surface_pressure,wind_speed_10m,wind_direction_10m&timezone=America%2FMexico_City&forecast_hours={horas_futuras}"
             
-            # Reintentos por lote
+            # 🚨 FIX 2: 3 Intentos y Timeout más generoso (30 segundos)
             exito_lote = False
-            for intento in range(2):
+            for intento in range(3):
                 try:
-                    print(f"📡 Lote {idx+1}/5 - Intento {intento+1}...")
-                    res = requests.get(url, timeout=20)
+                    print(f"📡 Lote {idx+1}/{len(chunks)} - Intento {intento+1}...")
+                    res = requests.get(url, timeout=30)
+                    
                     if res.status_code == 200:
                         data = res.json()
-                        # Si es un solo punto, Open-Meteo no manda lista, lo normalizamos
                         if not isinstance(data, list): data = [data]
                         
                         for item in data:
@@ -80,19 +80,22 @@ def fetch_open_meteo():
                                 "hourly": item['hourly']
                             })
                         exito_lote = True
-                        break
+                        break # Salimos del bucle si fue exitoso
                     else:
                         print(f"⚠️ Error {res.status_code} en Lote {idx+1}")
                 except Exception as e:
-                    print(f"⚠️ Fallo en Lote {idx+1}: {e}")
+                    print(f"⚠️ Fallo de red en Lote {idx+1}: {e}")
                 
-                time.sleep(1) # Respiro entre reintentos
+                # 🚨 FIX 3: Backoff exponencial (Esperamos antes de volver a golpear la API)
+                if intento < 2:
+                    time.sleep(2 + intento) 
             
             if not exito_lote:
-                print(f"❌ Abortando: El Lote {idx+1} falló definitivamente.")
+                print(f"❌ Abortando: El Lote {idx+1} falló después de 3 intentos.")
                 return None
             
-            time.sleep(0.5) # Respiro entre lotes para no saturar la API
+            # Respiro entre lotes exitosos
+            time.sleep(1.5) 
             
         print(f"✅ Éxito: {len(full_results)} nodos procesados correctamente.")
         return full_results
@@ -100,7 +103,6 @@ def fetch_open_meteo():
     except Exception as e:
         print(f"❌ Error crítico en fetch_open_meteo: {e}")
         return None
-
 
 def lambda_handler(event, context):
     # ==========================================
