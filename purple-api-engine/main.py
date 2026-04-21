@@ -101,6 +101,7 @@ def fetch_open_meteo():
         print(f"❌ Error crítico en fetch_open_meteo: {e}")
         return None
 
+
 def lambda_handler(event, context):
     # ==========================================
     # --- 0. PROXY S3 (Vía Rápida para el Frontend) ---
@@ -134,11 +135,9 @@ def lambda_handler(event, context):
     # Si la ejecución sigue aquí, es porque toca procesar la ciencia de datos.
     print("🧠 Iniciando Motor de IA...")
     
-    # 🚨 FIX: Definir qué trabajo vamos a hacer y la hora actual
     es_trabajo_pronostico = event.get('action') == 'run_forecast'
     ahora = datetime.datetime.now(datetime.timezone.utc)
     
-    # Carga de geometría (esto es lo que tarda, por eso lo alejamos de la ruta web)
     with open(GEOJSON_PATH, 'r', encoding='utf-8') as f:
         malla_json = json.load(f)
         
@@ -151,8 +150,6 @@ def lambda_handler(event, context):
     # ==========================================
     if es_trabajo_pronostico:
         print("🔮 Iniciando Proyección de Forecast...")
-        
-        # 🚨 Llamada directa a Open-Meteo (recuerda que arriba le pusimos 12 horas)
         forecast_raw = fetch_open_meteo()
 
         if not forecast_raw:
