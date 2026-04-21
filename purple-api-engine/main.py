@@ -134,6 +134,10 @@ def lambda_handler(event, context):
     # Si la ejecución sigue aquí, es porque toca procesar la ciencia de datos.
     print("🧠 Iniciando Motor de IA...")
     
+    # 🚨 FIX: Definir qué trabajo vamos a hacer y la hora actual
+    es_trabajo_pronostico = event.get('action') == 'run_forecast'
+    ahora = datetime.datetime.now(datetime.timezone.utc)
+    
     # Carga de geometría (esto es lo que tarda, por eso lo alejamos de la ruta web)
     with open(GEOJSON_PATH, 'r', encoding='utf-8') as f:
         malla_json = json.load(f)
@@ -141,6 +145,7 @@ def lambda_handler(event, context):
     grid = gpd.GeoDataFrame.from_features(malla_json['features'])
     grid['lon'] = grid.geometry.x
     grid['lat'] = grid.geometry.y
+
     # ==========================================
     # CASO A: PRONÓSTICO (Cada 1 hora)
     # ==========================================
