@@ -38,45 +38,64 @@ def ejecutar_interpolacion(df_puntos, malla_base):
         return vals
 
 def fetch_open_meteo():
-    """Genera la malla de 100 nodos y descarga el pronóstico de Open-Meteo con Reintentos"""
+    """Descarga el pronóstico dividiendo los 100 puntos en lotes para evitar error 502"""
     try:
-        print("🌐 Construyendo malla de 100 nodos para Open-Meteo...")
+        print("🌐 Generando malla de 100 puntos...")
         latS, latN, lonW, lonE = 19.155, 19.772, -99.352, -98.867
         steps = 9
-        lats, lons = [], []
+        all_coords = []
         for i in range(steps + 1):
             lat = latS + (i * (latN - latS) / steps)
             for j in range(steps + 1):
                 lon = lonW + (j * (lonE - lonW) / steps)
-                lats.append(f"{lat:.4f}")
-                lons.append(f"{lon:.4f}")
-                
+                all_coords.append((f"{lat:.4f}", f"{lon:.4f}"))
+        
+        # 🚨 DIVISIÓN EN LOTES (Batching)
+        size = 20 # 20 puntos por petición
+        chunks = [all_coords[i:i + size] for i in range(0, len(all_coords), size)]
+        full_results = []
+        
         horas_futuras = 12
-        url = f"https://api.open-meteo.com/v1/forecast?latitude={','.join(lats)}&longitude={','.join(lons)}&hourly=temperature_2m,relative_humidity_2m,precipitation,surface_pressure,wind_speed_10m,wind_direction_10m&timezone=America%2FMexico_City&forecast_hours={horas_futuras}"
         
-        # 🚨 SISTEMA DE REINTENTOS PARA RESILIENCIA 🚨
-        for intento in range(2):
-            try:
-                print(f"📡 Solicitando Open-Meteo (Intento {intento + 1}/2)...")
-                res = requests.get(url, timeout=25) 
+        for idx, chunk in enumerate(chunks):
+            lats = [c[0] for c in chunk]
+            lons = [c[1] for c in chunk]
+            url = f"https://api.open-meteo.com/v1/forecast?latitude={','.join(lats)}&longitude={','.join(lons)}&hourly=temperature_2m,relative_humidity_2m,precipitation,surface_pressure,wind_speed_10m,wind_direction_10m&timezone=America%2FMexico_City&forecast_hours={horas_futuras}"
+            
+            # Reintentos por lote
+            exito_lote = False
+            for intento in range(2):
+                try:
+                    print(f"📡 Lote {idx+1}/5 - Intento {intento+1}...")
+                    res = requests.get(url, timeout=20)
+                    if res.status_code == 200:
+                        data = res.json()
+                        # Si es un solo punto, Open-Meteo no manda lista, lo normalizamos
+                        if not isinstance(data, list): data = [data]
+                        
+                        for item in data:
+                            full_results.append({
+                                "lat": item['latitude'], 
+                                "lon": item['longitude'], 
+                                "hourly": item['hourly']
+                            })
+                        exito_lote = True
+                        break
+                    else:
+                        print(f"⚠️ Error {res.status_code} en Lote {idx+1}")
+                except Exception as e:
+                    print(f"⚠️ Fallo en Lote {idx+1}: {e}")
                 
-                if res.status_code != 200:
-                    print(f"⚠️ Open-Meteo rechazó la petición con HTTP {res.status_code}")
-                    
-                res.raise_for_status()
-                data = res.json()
-                
-                if isinstance(data, list):
-                    print("✅ Datos de Open-Meteo descargados con éxito.")
-                    return [{"lat": n['latitude'], "lon": n['longitude'], "hourly": n['hourly']} for n in data]
-                
-            except Exception as e:
-                print(f"⚠️ Micro-falla en intento {intento + 1}: {e}")
-                if intento < 1: # Solo duerme si va a haber un segundo intento
-                    time.sleep(2)
-        
-        print("❌ Error Fatal: Open-Meteo falló después de todos los reintentos.")
-        return None
+                time.sleep(1) # Respiro entre reintentos
+            
+            if not exito_lote:
+                print(f"❌ Abortando: El Lote {idx+1} falló definitivamente.")
+                return None
+            
+            time.sleep(0.5) # Respiro entre lotes para no saturar la API
+            
+        print(f"✅ Éxito: {len(full_results)} nodos procesados correctamente.")
+        return full_results
         
     except Exception as e:
         print(f"❌ Error crítico en fetch_open_meteo: {e}")
@@ -201,14 +220,23 @@ def lambda_handler(event, context):
     else:
         print("🚀 Iniciando Motor de Lluvia Actual...")
         try:
-            # 🚨 FIX: Subimos a 15s de tolerancia para darle tiempo a Lambda A
-            req = requests.get(MIRROR_API_URL, timeout=15)
-            api_data = req.json()
-            estaciones = api_data.get('data', [])
+            # 🛡️ SISTEMA ANTIFALLOS: 2 Intentos y Timeout extendido
+            for i in range(2):
+                try:
+                    print(f"📡 Conectando con API Espejo (Intento {i+1}/2)...")
+                    req = requests.get(MIRROR_API_URL, timeout=20) # Subimos a 20s
+                    req.raise_for_status()
+                    api_data = req.json()
+                    estaciones = api_data.get('data', [])
+                    print(f"✅ Datos recibidos de la API Espejo.")
+                    break # Éxito: Salimos del bucle de reintentos
+                except Exception as e:
+                    if i == 1: raise e # Si falla el segundo intento, lanzamos el error al log
+                    print(f"⚠️ Reintentando conexión con Espejo por lentitud: {e}")
+                    time.sleep(1) # Un segundo de respiro
         except Exception as e:
-            # 🚨 FIX: Imprimimos el error para que quede registrado en los logs de CloudWatch
-            print(f"❌ Error crítico leyendo API Espejo: {e}")
-            return {"statusCode": 500, "body": f"Error leyendo API Espejo: {e}"}
+            print(f"❌ Error crítico tras reintentos en API Espejo: {e}")
+            return {"statusCode": 500, "body": f"Fallo de conexión Espejo: {str(e)}"}
 
         lluvia_activa = [s for s in estaciones if float(s['acumulado_actual']) > 0]
         
