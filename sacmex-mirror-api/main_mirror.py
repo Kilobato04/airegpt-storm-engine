@@ -213,17 +213,21 @@ class EarlyWarningSacmexAPI:
                 if has_changed:
                     self.cache['lastDataChange'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
                     self.log("✅ DATOS CAMBIARON: SACMEX actualizó datos reales")
-                
-                self.update_data_freshness()
-                self.save_persisted_cache()
-                # 🟢 AQUÍ DISPARAMOS EL LOG A GOOGLE SHEETS
-                # Solo se dispara cuando la actualización en background fue un éxito
-                estado_actual = "EARLY_WARNING_OK" if has_changed else "NO_CHANGES_DETECTED"
-                self.log_to_sheets(fresh_data, estado_actual)
-                # 🟢 NUEVO: DESACOPLAMIENTO S3
-                # Construimos la respuesta completa y la subimos
-                payload_s3 = self.build_response(fresh_data, False, 'fresh_background_update')
-                self.upload_to_s3(payload_s3)
+                    
+                    self.update_data_freshness()
+                    self.save_persisted_cache()
+                    
+                    self.log_to_sheets(fresh_data, "EARLY_WARNING_OK")
+                    
+                    # 🚨 EL GATILLO: Al subir esto a S3, S3 despertará a Lambda B
+                    payload_s3 = self.build_response(fresh_data, False, 'fresh_background_update')
+                    self.upload_to_s3(payload_s3)
+                else:
+                    # Si no hay cambios, solo logueamos en Google Sheets y terminamos
+                    self.log("💤 SIN CAMBIOS: No se sube a S3. Lambda B descansa.")
+                    self.update_data_freshness()
+                    self.save_persisted_cache()
+                    self.log_to_sheets(fresh_data, "NO_CHANGES_DETECTED")
             else:
                 self.cache['errorCount'] += 1
                 
