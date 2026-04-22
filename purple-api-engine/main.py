@@ -132,12 +132,21 @@ def lambda_handler(event, context):
             return {"statusCode": 404, "headers": headers, "body": json.dumps({"error": "Data not ready"})}
 
     # ==========================================
-    # --- MOTOR DE CÁLCULO (Sólo Cron/Test) ---
+    # --- 1. DETECCIÓN DEL TIPO DE GATILLO (Event-Driven) ---
     # ==========================================
-    # Si la ejecución sigue aquí, es porque toca procesar la ciencia de datos.
-    print("🧠 Iniciando Motor de IA...")
+    print("🧠 Despertando Motor de IA...")
     
     es_trabajo_pronostico = event.get('action') == 'run_forecast'
+    
+    # 🚨 NUEVO: ¿Me despertó S3 porque Lambda A subió un archivo nuevo?
+    es_evento_s3 = False
+    if 'Records' in event and len(event['Records']) > 0:
+        if 's3' in event['Records'][0]:
+            llave_modificada = event['Records'][0]['s3']['object']['key']
+            if llave_modificada == 'latest_sacmex.json':
+                es_evento_s3 = True
+                print("🔔 TRIG: S3 detectó lluvia nueva. Forzando Modelo Live.")
+
     ahora = datetime.datetime.now(datetime.timezone.utc)
     
     with open(GEOJSON_PATH, 'r', encoding='utf-8') as f:
