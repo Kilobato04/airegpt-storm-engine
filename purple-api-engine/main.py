@@ -224,10 +224,10 @@ def lambda_handler(event, context):
             return {"statusCode": 500, "body": f"Error interno en forecast: {str(e)}"}
 
     # ==========================================
-    # CASO B: PRESENTE (Cada 3 minutos)
+    # CASO B: PRESENTE (Gatillo S3 o Test Manual)
     # ==========================================
-    else:
-        print("🚀 Iniciando Motor de Lluvia Actual (Modo S3-Direct)...")
+    elif es_evento_s3 or event.get('action') == 'run_live':
+        print("🚀 Iniciando Motor de Lluvia Actual (Modo Event-Driven S3)...")
         try:
             # 🚨 SUSTITUCIÓN: En lugar de requests.get, leemos el buzón de S3
             print("📡 Obteniendo datos crudos desde S3 (latest_sacmex.json)...")
