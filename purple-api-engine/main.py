@@ -24,6 +24,24 @@ UMBRAL_PURPURA = 1.0
 
 s3_client = boto3.client('s3')
 
+# ==========================================
+# ⚡ CACHÉ GLOBAL (Optimización Cold Start)
+# ==========================================
+RIESGOS_CACHE = None
+
+def cargar_riesgos_historicos():
+    global RIESGOS_CACHE
+    if RIESGOS_CACHE is None:
+        try:
+            print("📦 Descargando catálogo de riesgos 2019-2024 (Cold Start)...")
+            obj = s3_client.get_object(Bucket=S3_BUCKET, Key="risk_zones_2019_2024.json")
+            RIESGOS_CACHE = json.loads(obj['Body'].read().decode('utf-8')).get('risk_zones', [])
+            print(f"✅ {len(RIESGOS_CACHE)} zonas de riesgo cargadas en RAM.")
+        except Exception as e:
+            print(f"⚠️ Error cargando caché de riesgos: {e}")
+            RIESGOS_CACHE = []
+    return RIESGOS_CACHE
+
 def ejecutar_interpolacion(df_puntos, malla_base):
     """Interpolación RBF Gaussiana centralizada"""
     try:
@@ -365,6 +383,41 @@ def lambda_handler(event, context):
                     except Exception:
                         continue
 
+                # ==========================================
+                # 🚨 NUEVO: CRUCE ESPACIAL CON ZONAS DE RIESGO
+                # ==========================================
+                try:
+                    zonas_de_riesgo = cargar_riesgos_historicos()
+                    if zonas_de_riesgo and output_cells:
+                        # Extraemos las coords del grid RBF que acabamos de generar
+                        coords_malla = [[c['lat'], c['lon']] for c in output_cells]
+                        arbol_malla = cKDTree(coords_malla)
+
+                        for zona in zonas_de_riesgo:
+                            # 1. Encontramos la celda que cubre este punto
+                            _, idx_cercano = arbol_malla.query([zona['lat'], zona['lon']])
+                            
+                            celda_afectada = output_cells[idx_cercano]
+                            lluvia_actual = celda_afectada.get('rain_mm_h', 0)
+                            
+                            # 2. EL GATILLO: Lluvia Fuerte (> 15mm/h) + Zona de Peligro
+                            alerta_telegram = False
+                            if lluvia_actual >= 15.0 and zona.get('vulnerability') in ['CRÍTICO', 'ALTO']:
+                                alerta_telegram = True
+
+                            # 3. Inyectamos la historia (Ley del peor escenario)
+                            if 'riesgo_historico' not in celda_afectada or zona['historical_depth_m'] > celda_afectada['riesgo_historico']['tirante_historico_m']:
+                                celda_afectada['riesgo_historico'] = {
+                                    "id": zona['id'],
+                                    "nombre": zona['name'],
+                                    "vulnerabilidad": zona['vulnerability'],
+                                    "tirante_historico_m": zona['historical_depth_m'],
+                                    "anios_inundado": zona.get('recurrence_years', 1),
+                                    "alerta_inundacion_en_vivo": alerta_telegram
+                                }
+                except Exception as e:
+                    print(f"⚠️ Error al cruzar zonas de riesgo (Ignorado para no romper modelo): {e}")
+                    
                 # ==========================================
                 # 🚲 7. SNAPSHOT DE ECOBICI EN TIEMPO REAL
                 # ==========================================
