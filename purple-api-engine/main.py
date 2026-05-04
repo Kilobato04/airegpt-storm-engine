@@ -14,6 +14,8 @@ import os
 S3_BUCKET = "airegpt-storm-data"
 S3_KEY_LATEST = "latest_model.json"
 S3_KEY_FORECAST = "latest_forecast.json"
+S3_KEY_HISTORY = "history_24h.json"
+S3_KEY_ACCUMULATED = "accumulated_24h.json"
 MIRROR_API_URL = "https://onr6tt7eohxppmqaak3jyapt3e0knhvu.lambda-url.us-east-1.on.aws/"
 GEOJSON_PATH = '/var/task/zmvm_malla_consolidada.geojson'
 
@@ -224,139 +226,222 @@ def lambda_handler(event, context):
             return {"statusCode": 500, "body": f"Error interno en forecast: {str(e)}"}
 
     # ==========================================
-    # CASO B: PRESENTE (Gatillo S3 o Test Manual)
+    # CASO B: PRESENTE (Gatillo S3 o Cron de Limpieza)
     # ==========================================
-    elif es_evento_s3 or event.get('action') == 'run_live':
-        print("🚀 Iniciando Motor de Lluvia Actual (Modo Event-Driven S3)...")
-        try:
-            # 🚨 SUSTITUCIÓN: En lugar de requests.get, leemos el buzón de S3
-            print("📡 Obteniendo datos crudos desde S3 (latest_sacmex.json)...")
-            res_s3 = s3_client.get_object(Bucket=S3_BUCKET, Key="latest_sacmex.json")
-            api_data = json.loads(res_s3['Body'].read().decode('utf-8'))
-            estaciones = api_data.get('data', [])
-            print(f"✅ Datos recuperados exitosamente de S3.")
-        except Exception as e:
-            print(f"❌ Error crítico leyendo origen en S3: {e}")
-            return {"statusCode": 500, "body": f"Error de lectura S3: {str(e)}"}
-
-        lluvia_activa = [s for s in estaciones if float(s['acumulado_actual']) > 0]
+    elif es_evento_s3 or event.get('action') == 'run_live' or event.get('action') == 'cleanup_cron':
+        es_cron = event.get('action') == 'cleanup_cron'
+        print(f"🚀 Iniciando Motor de Lluvia Actual (Modo: {'CRON Limpieza' if es_cron else 'Event-Driven S3'})...")
         
-        # 1. Leemos el modelo previo de S3 para la derivada
+        # Constantes locales para los nuevos archivos S3
+        S3_KEY_HISTORY = "history_24h.json"
+        S3_KEY_ACCUMULATED = "accumulated_24h.json"
+
+        # --- PASO 1: Descargar el Historial de 24h ---
         try:
-            response = s3_client.get_object(Bucket=S3_BUCKET, Key=S3_KEY_LATEST)
-            estado_previo = json.loads(response['Body'].read().decode('utf-8'))
-            max_rain_previo = float(estado_previo.get('metadata', {}).get('lluvia_max', 0.0))
-            fecha_previa = datetime.datetime.fromisoformat(estado_previo.get('timestamp'))
+            res_hist = s3_client.get_object(Bucket=S3_BUCKET, Key=S3_KEY_HISTORY)
+            historial_24h = json.loads(res_hist['Body'].read().decode('utf-8'))
         except Exception:
-            max_rain_previo = 0.0
-            fecha_previa = ahora - datetime.timedelta(minutes=3)
+            print("⚠️ No hay historial de 24h previo, creando uno nuevo.")
+            historial_24h = []
 
-        # 2. Tu Lógica de Reposo (Manteniendo N < 2)
-        if len(lluvia_activa) < 2:
-            if max_rain_previo > 0.0:
-                print("🧹 FIN DE TORMENTA: Limpiando mapa...")
-                # Dejamos que el código siga para que escriba la malla en ceros
-            else:
-                print("💤 ESTADO SLEEP: Mapa ya en cero.")
-                return {"statusCode": 200, "body": "SLEEP"}
-        else:
-            print(f"⛈️ ESTADO ACTIVO: {len(lluvia_activa)} estaciones con lluvia.")
+        nuevo_registro_valido = False
+        final_payload = None
 
-        # 3. Preparación de Datos
-        if len(lluvia_activa) >= 2:
-            df_obs = pd.DataFrame([{
-                'id': s['id'], 'nombre': s['nombre'], 'lat': float(s['latitud']),
-                'lon': float(s['longitud']), 'rain': float(s['acumulado_actual'])
-            } for s in lluvia_activa])
-            max_rain_actual = float(df_obs['rain'].max())
-        else:
-            df_obs = pd.DataFrame(columns=['id', 'nombre', 'lat', 'lon', 'rain'])
-            max_rain_actual = 0.0
-
-        delta_time_min = (ahora - fecha_previa).total_seconds() / 60.0
-        delta_rain = max_rain_actual - max_rain_previo
-        
-        derivada = 0.0
-        alerta_status = "NORMAL"
-        if delta_time_min > 0 and delta_rain > 0:
-            derivada = delta_rain / delta_time_min
-            if derivada >= UMBRAL_NARANJA: alerta_status = "PREVENTIVA_NARANJA"
-            if derivada >= UMBRAL_PURPURA: alerta_status = "CRITICA_PURPURA"
-
-        print(f"📈 Derivada: {derivada:.2f} mm/min | Alerta: {alerta_status}")
-
-        # 4. Cálculo Espacial Protegido
-        if max_rain_actual > 0:
-            grid['rain_predicted'] = ejecutar_interpolacion(df_obs, grid)
-        else:
-            grid['rain_predicted'] = 0.0
-        
-        output_cells = []
-        tree = cKDTree(grid[['lat', 'lon']].values)
-        
-        # 5. Inicializamos las 3,000 celdas
-        for idx, row in grid.iterrows():
-            rain_val = row['rain_predicted']
-            output_cells.append({
-                "lat": round(row['lat'], 5), "lon": round(row['lon'], 5),
-                "col": str(row.get('colonia', 'Sin Colonia')),
-                "mun": str(row.get('municipio', 'CDMX/Edomex')),
-                "edo": str(row.get('estado', 'CDMX')),
-                "rain_mm_h": float(rain_val),
-                "derivative_mm_min": 0.0,
-                "risk": "Moderado" if rain_val > 3 else "Ligero",
-                "alert_status": "NORMAL",
-                "station": None,
-                "source": "Modelo Espacial (RBF)"
-            })
-
-        # 6. Planchamos TODAS las estaciones sobre la malla (llueva o no)
-        for s in estaciones:
+        if not es_cron:
+            # === RUTA ACTIVA (Gatillo S3: Generar RBF) ===
             try:
-                s_lat = float(s['latitud'])
-                s_lon = float(s['longitud'])
-                s_rain = float(s['acumulado_actual'])
-                _, closest_idx = tree.query([s_lat, s_lon])
-                
-                nombre_est = str(s.get('nombre', ''))
-                id_est = str(s.get('id', ''))
-                
-                if 'chaak' in nombre_est.lower() or 'smability' in nombre_est.lower():
-                    origen = "Sensor Activo (Red Smability)"
-                else:
-                    origen = "Sensor Activo (Red SACMEX)"
+                print("📡 Obteniendo datos crudos desde S3 (latest_sacmex.json)...")
+                res_s3 = s3_client.get_object(Bucket=S3_BUCKET, Key="latest_sacmex.json")
+                api_data = json.loads(res_s3['Body'].read().decode('utf-8'))
+                estaciones = api_data.get('data', [])
+                print(f"✅ Datos recuperados exitosamente de S3.")
+            except Exception as e:
+                print(f"❌ Error crítico leyendo origen en S3: {e}")
+                return {"statusCode": 500, "body": f"Error de lectura S3: {str(e)}"}
 
-                output_cells[closest_idx].update({
-                    "station": f"{nombre_est} (ID: {id_est})",
-                    "source": origen
-                })
-
-                # Si además está lloviendo, forzamos la realidad dura
-                if s_rain > 0:
-                    output_cells[closest_idx]["rain_mm_h"] = float(s_rain)
-                    output_cells[closest_idx]["risk"] = "Crítico" if alerta_status != "NORMAL" else "Moderado"
-                    
-                    if max_rain_actual > 0 and s_rain == max_rain_actual:
-                        output_cells[closest_idx]["derivative_mm_min"] = float(round(derivada, 2))
-                        output_cells[closest_idx]["alert_status"] = alerta_status
-
+            lluvia_activa = [s for s in estaciones if float(s['acumulado_actual']) > 0]
+            
+            # 1. Leemos el modelo previo de S3 para la derivada
+            try:
+                response = s3_client.get_object(Bucket=S3_BUCKET, Key=S3_KEY_LATEST)
+                estado_previo = json.loads(response['Body'].read().decode('utf-8'))
+                max_rain_previo = float(estado_previo.get('metadata', {}).get('lluvia_max', 0.0))
+                fecha_previa = datetime.datetime.fromisoformat(estado_previo.get('timestamp'))
             except Exception:
-                continue
+                max_rain_previo = 0.0
+                fecha_previa = ahora - datetime.timedelta(minutes=3)
 
-        final_payload = {
-            "timestamp": ahora.isoformat(),
-            "metadata": {
-                "lluvia_max": max_rain_actual,
-                "derivada_max": round(derivada, 3),
-                "alerta_global": alerta_status
-            },
-            "values": output_cells
-        }
+            # 2. Lógica de Reposo (Manteniendo N < 2)
+            if len(lluvia_activa) < 2:
+                if max_rain_previo > 0.0:
+                    print("🧹 FIN DE TORMENTA: Limpiando mapa...")
+                else:
+                    print("💤 ESTADO SLEEP: Mapa ya en cero.")
+                    # 🚨 IMPORTANTE: En lugar de hacer return, cerramos la ruta activa
+                    # para que la Lambda siga y aplique el barrendero si es necesario.
+                    pass 
+            else:
+                print(f"⛈️ ESTADO ACTIVO: {len(lluvia_activa)} estaciones con lluvia.")
 
-        s3_client.put_object(
-            Bucket=S3_BUCKET, Key=S3_KEY_LATEST,
-            Body=json.dumps(final_payload), ContentType='application/json', CacheControl='max-age=60'
-        )
+            # Si el mapa no está en cero absoluto, procedemos a calcular
+            if len(lluvia_activa) >= 2 or max_rain_previo > 0.0:
+                # 3. Preparación de Datos
+                if len(lluvia_activa) >= 2:
+                    df_obs = pd.DataFrame([{
+                        'id': s['id'], 'nombre': s['nombre'], 'lat': float(s['latitud']),
+                        'lon': float(s['longitud']), 'rain': float(s['acumulado_actual'])
+                    } for s in lluvia_activa])
+                    max_rain_actual = float(df_obs['rain'].max())
+                else:
+                    df_obs = pd.DataFrame(columns=['id', 'nombre', 'lat', 'lon', 'rain'])
+                    max_rain_actual = 0.0
 
-        print("✅ Modelado PRESENTE completado y subido a S3.")
-        return {"statusCode": 200, "body": "Present Model Executed successfully"}
+                delta_time_min = (ahora - fecha_previa).total_seconds() / 60.0
+                delta_rain = max_rain_actual - max_rain_previo
+                
+                derivada = 0.0
+                alerta_status = "NORMAL"
+                if delta_time_min > 0 and delta_rain > 0:
+                    derivada = delta_rain / delta_time_min
+                    if derivada >= UMBRAL_NARANJA: alerta_status = "PREVENTIVA_NARANJA"
+                    if derivada >= UMBRAL_PURPURA: alerta_status = "CRITICA_PURPURA"
+
+                print(f"📈 Derivada: {derivada:.2f} mm/min | Alerta: {alerta_status}")
+
+                # 4. Cálculo Espacial Protegido
+                if max_rain_actual > 0:
+                    grid['rain_predicted'] = ejecutar_interpolacion(df_obs, grid)
+                else:
+                    grid['rain_predicted'] = 0.0
+                
+                output_cells = []
+                tree = cKDTree(grid[['lat', 'lon']].values)
+                
+                # 5. Inicializamos las celdas
+                for idx, row in grid.iterrows():
+                    rain_val = row['rain_predicted']
+                    output_cells.append({
+                        "lat": round(row['lat'], 5), "lon": round(row['lon'], 5),
+                        "col": str(row.get('colonia', 'Sin Colonia')),
+                        "mun": str(row.get('municipio', 'CDMX/Edomex')),
+                        "edo": str(row.get('estado', 'CDMX')),
+                        "rain_mm_h": float(rain_val),
+                        "derivative_mm_min": 0.0,
+                        "risk": "Moderado" if rain_val > 3 else "Ligero",
+                        "alert_status": "NORMAL",
+                        "station": None,
+                        "source": "Modelo Espacial (RBF)"
+                    })
+
+                # 6. Planchamos TODAS las estaciones sobre la malla (llueva o no)
+                for s in estaciones:
+                    try:
+                        s_lat = float(s['latitud'])
+                        s_lon = float(s['longitud'])
+                        s_rain = float(s['acumulado_actual'])
+                        _, closest_idx = tree.query([s_lat, s_lon])
+                        
+                        nombre_est = str(s.get('nombre', ''))
+                        id_est = str(s.get('id', ''))
+                        
+                        if 'chaak' in nombre_est.lower() or 'smability' in nombre_est.lower():
+                            origen = "Sensor Activo (Red Smability)"
+                        else:
+                            origen = "Sensor Activo (Red SACMEX)"
+
+                        output_cells[closest_idx].update({
+                            "station": f"{nombre_est} (ID: {id_est})",
+                            "source": origen
+                        })
+
+                        if s_rain > 0:
+                            output_cells[closest_idx]["rain_mm_h"] = float(s_rain)
+                            output_cells[closest_idx]["risk"] = "Crítico" if alerta_status != "NORMAL" else "Moderado"
+                            
+                            if max_rain_actual > 0 and s_rain == max_rain_actual:
+                                output_cells[closest_idx]["derivative_mm_min"] = float(round(derivada, 2))
+                                output_cells[closest_idx]["alert_status"] = alerta_status
+
+                    except Exception:
+                        continue
+
+                final_payload = {
+                    "timestamp": ahora.isoformat(),
+                    "metadata": {
+                        "lluvia_max": max_rain_actual,
+                        "derivada_max": round(derivada, 3),
+                        "alerta_global": alerta_status
+                    },
+                    "values": output_cells
+                }
+
+                s3_client.put_object(
+                    Bucket=S3_BUCKET, Key=S3_KEY_LATEST,
+                    Body=json.dumps(final_payload), ContentType='application/json', CacheControl='max-age=60'
+                )
+
+                print("✅ Modelado PRESENTE completado y subido a S3.")
+                
+                # AÑADIMOS EL NUEVO REGISTRO AL HISTORIAL
+                historial_24h.append(final_payload)
+                nuevo_registro_valido = True
+            # === FIN RUTA ACTIVA ===
+
+        # --- PASO 2: EL BARRENDERO (Purga de >24h) ---
+        ahora_ts = int(ahora.timestamp() * 1000)
+        limite_24h_ms = 24 * 60 * 60 * 1000
+        
+        len_original = len(historial_24h)
+        # Filtramos para quedarnos solo con lo que es más nuevo que 24 horas
+        historial_24h = [
+            reg for reg in historial_24h 
+            if ahora_ts - int(datetime.datetime.fromisoformat(reg['timestamp']).timestamp() * 1000) <= limite_24h_ms
+        ]
+        
+        datos_purgados = len_original - len(historial_24h)
+
+        # --- PASO 3: CÁLCULO DEL ACUMULADO GLOBAL ---
+        # Solo calculamos y subimos a S3 si entró un dato nuevo (tormenta) o si se borró un dato viejo (cron de limpieza)
+        if nuevo_registro_valido or datos_purgados > 0:
+            print(f"🧹 Actualizando Historial: {datos_purgados} regs viejos borrados. Total actual: {len(historial_24h)}")
+            
+            s3_client.put_object(
+                Bucket=S3_BUCKET, Key=S3_KEY_HISTORY,
+                Body=json.dumps(historial_24h), ContentType='application/json', CacheControl='max-age=300'
+            )
+
+            print("➕ Colapsando matrices para Acumulado Total...")
+            
+            if final_payload is None and len(historial_24h) > 0:
+                final_payload = historial_24h[-1] 
+            
+            if final_payload:
+                matriz_acumulada = final_payload.copy()
+                matriz_acumulada['timestamp'] = ahora.isoformat()
+                matriz_acumulada['metadata']['tipo'] = "ACUMULADO_24H"
+                
+                # Inicializamos todo en 0.0
+                for celda in matriz_acumulada['values']:
+                    celda['rain_mm_h'] = 0.0
+                    celda['derivative_mm_min'] = 0.0
+
+                # Sumamos la lluvia de cada celda
+                for registro in historial_24h:
+                    for i, celda in enumerate(registro['values']):
+                        matriz_acumulada['values'][i]['rain_mm_h'] += float(celda.get('rain_mm_h', 0.0))
+
+                for celda in matriz_acumulada['values']:
+                    celda['rain_mm_h'] = round(celda['rain_mm_h'], 2)
+
+                s3_client.put_object(
+                    Bucket=S3_BUCKET, Key=S3_KEY_ACCUMULATED,
+                    Body=json.dumps(matriz_acumulada), ContentType='application/json', CacheControl='max-age=300'
+                )
+                print("✅ Acumulado de 24h Guardado Exitosamente en S3.")
+            else:
+                print("☁️ Historial de 24h completamente vacío. Cielos despejados.")
+
+        else:
+            print("💤 Mantenimiento: No hubo ingresos nuevos ni purga de viejos. Ignorando cálculo.")
+
+        return {"statusCode": 200, "body": "Model Executed Successfully"}
