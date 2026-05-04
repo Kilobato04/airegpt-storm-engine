@@ -365,6 +365,26 @@ def lambda_handler(event, context):
                     except Exception:
                         continue
 
+                # ==========================================
+                # 🚲 7. SNAPSHOT DE ECOBICI EN TIEMPO REAL
+                # ==========================================
+                ecobici_status = {}
+                try:
+                    print("🚲 Obteniendo status dinámico de Ecobici...")
+                    # Timeout estricto de 3s para no retrasar la alerta de lluvia
+                    res_eco = requests.get("https://gbfs.mex.lyftbikes.com/gbfs/en/station_status.json", timeout=3)
+                    if res_eco.status_code == 200:
+                        eco_data = res_eco.json()
+                        for st in eco_data.get('data', {}).get('stations', []):
+                            # Mapeo ultraligero: {"ID_Estacion": Bicis_Disponibles}
+                            ecobici_status[st['station_id']] = st['num_bikes_available']
+                        print(f"✅ Bicis mapeadas en {len(ecobici_status)} estaciones.")
+                except Exception as e:
+                    print(f"⚠️ Error al obtener Ecobici (ignorado para no afectar lluvia): {e}")
+
+                # ==========================================
+                # 8. EMPAQUETADO FINAL (Lluvia + Ecobici)
+                # ==========================================
                 final_payload = {
                     "timestamp": ahora.isoformat(),
                     "metadata": {
@@ -372,9 +392,11 @@ def lambda_handler(event, context):
                         "derivada_max": round(derivada, 3),
                         "alerta_global": alerta_status
                     },
-                    "values": output_cells
+                    "values": output_cells,
+                    "ecobici_live": ecobici_status  # <--- AQUÍ VIVEN LAS BICIS AHORA
                 }
 
+                # Guardamos el Snapshot "Live" (El presente)
                 s3_client.put_object(
                     Bucket=S3_BUCKET, Key=S3_KEY_LATEST,
                     Body=json.dumps(final_payload), ContentType='application/json', CacheControl='max-age=60'
@@ -383,6 +405,7 @@ def lambda_handler(event, context):
                 print("✅ Modelado PRESENTE completado y subido a S3.")
                 
                 # AÑADIMOS EL NUEVO REGISTRO AL HISTORIAL
+                # (Al hacer esto, las bicis de hoy quedan congeladas en este frame)
                 historial_24h.append(final_payload)
                 nuevo_registro_valido = True
             # === FIN RUTA ACTIVA ===
