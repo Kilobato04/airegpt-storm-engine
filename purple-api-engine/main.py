@@ -419,24 +419,55 @@ def lambda_handler(event, context):
                     print(f"⚠️ Error al cruzar zonas de riesgo (Ignorado para no romper modelo): {e}")
                     
                 # ==========================================
-                # 🚲 7. SNAPSHOT DE ECOBICI EN TIEMPO REAL
+                # 🚲 7. SNAPSHOT DE ECOBICI (HÍBRIDO: ESTÁTICO + DINÁMICO)
                 # ==========================================
-                ecobici_status = {}
                 try:
                     print("🚲 Obteniendo status dinámico de Ecobici...")
-                    # Timeout estricto de 3s para no retrasar la alerta de lluvia
-                    res_eco = requests.get("https://gbfs.mex.lyftbikes.com/gbfs/en/station_status.json", timeout=3)
-                    if res_eco.status_code == 200:
-                        eco_data = res_eco.json()
-                        for st in eco_data.get('data', {}).get('stations', []):
-                            # Mapeo ultraligero: {"ID_Estacion": Bicis_Disponibles}
-                            ecobici_status[st['station_id']] = st['num_bikes_available']
-                        print(f"✅ Bicis mapeadas en {len(ecobici_status)} estaciones.")
+                    
+                    # 1. Cargamos el catálogo estático desde el almacenamiento local de la Lambda
+                    with open('/var/task/ecobici_stations.json', 'r', encoding='utf-8') as f:
+                        catalogo_estaciones = json.load(f).get('stations', [])
+                        
+                    # 2. Descargamos SOLO el status dinámico (disponibilidad de bicis)
+                    res_status = requests.get("https://gbfs.mex.lyftbikes.com/gbfs/en/station_status.json", timeout=3)
+                    
+                    if res_status.status_code == 200:
+                        status_data = res_status.json().get('data', {}).get('stations', [])
+                        
+                        # Diccionario ultra rápido de disponibilidad { "ID": bicis_disp }
+                        status_dict = {st['station_id']: st['num_bikes_available'] for st in status_data}
+                        
+                        estaciones_mapeadas = 0
+                        # 3. Iteramos nuestro catálogo local y lo inyectamos en la malla
+                        for st in catalogo_estaciones:
+                            st_id = str(st['id'])
+                            lat_eco = float(st['lat'])
+                            lon_eco = float(st['lon'])
+                            
+                            # Si no hay datos dinámicos para esta estación (está apagada), asumimos 0
+                            bicis_disp = status_dict.get(st_id, 0)
+                            
+                            # Usamos el 'tree' de la malla para hallar a qué celda pertenece
+                            _, idx_cercano = tree.query([lat_eco, lon_eco])
+                            celda_destino = output_cells[idx_cercano]
+                            
+                            # Inicializamos el bloque de movilidad si es la primera bici en esa celda
+                            if "movilidad" not in celda_destino:
+                                celda_destino["movilidad"] = {"ecobicis_en_celda": []}
+                                
+                            celda_destino["movilidad"]["ecobicis_en_celda"].append({
+                                "id": st_id,
+                                "nombre": st['name'],
+                                "disponibles": bicis_disp
+                            })
+                            estaciones_mapeadas += 1
+                            
+                        print(f"✅ {estaciones_mapeadas} estaciones asignadas espacialmente a sus celdas.")
                 except Exception as e:
-                    print(f"⚠️ Error al obtener Ecobici (ignorado para no afectar lluvia): {e}")
+                    print(f"⚠️ Error al cruzar Ecobici con la malla (ignorado): {e}")
 
                 # ==========================================
-                # 8. EMPAQUETADO FINAL (Lluvia + Ecobici)
+                # 8. EMPAQUETADO FINAL (Lluvia + Riesgo + Ecobici Integrado)
                 # ==========================================
                 final_payload = {
                     "timestamp": ahora.isoformat(),
@@ -445,8 +476,7 @@ def lambda_handler(event, context):
                         "derivada_max": round(derivada, 3),
                         "alerta_global": alerta_status
                     },
-                    "values": output_cells,
-                    "ecobici_live": ecobici_status  # <--- AQUÍ VIVEN LAS BICIS AHORA
+                    "values": output_cells
                 }
 
                 # Guardamos el Snapshot "Live" (El presente)
