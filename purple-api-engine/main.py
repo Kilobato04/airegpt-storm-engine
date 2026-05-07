@@ -500,59 +500,55 @@ def lambda_handler(event, context):
                     print(f"⚠️ Error al cruzar zonas de riesgo (Ignorado para no romper modelo): {e}")
                     
                 # ==========================================
-                # 🚲 7. SNAPSHOT DE ECOBICI (HÍBRIDO: ESTÁTICO + DINÁMICO)
+                # 🚲 7. SNAPSHOT DE ECOBICI (100% DINÁMICO)
                 # ==========================================
                 try:
-                    # --- 🔍 INICIO DE LOGS DE DIAGNÓSTICO ---
-                    directorio_base = os.environ.get('LAMBDA_TASK_ROOT', '/var/task')
-                    print(f"🔍 [DEBUG] Directorio base de Lambda: {directorio_base}")
-                    print(f"🔍 [DEBUG] Archivos en la raíz: {os.listdir(directorio_base)}")
+                    print("🚲 Obteniendo catálogo estático y status dinámico de Ecobici...")
                     
-                    ruta_estaciones = os.path.join(directorio_base, 'ecobici_stations.json')
-                    print(f"🔍 [DEBUG] Intentando abrir exactamente: {ruta_estaciones}")
-                    # --- 🔍 FIN DE LOGS DE DIAGNÓSTICO ---
-
-                    print("🚲 Obteniendo status dinámico de Ecobici...")
+                    # 1. Descargamos el catálogo de estaciones directo de la API (Siempre actualizado)
+                    res_info = requests.get("https://gbfs.mex.lyftbikes.com/gbfs/en/station_information.json", timeout=4)
                     
-                    # 1. Cargamos el catálogo estático desde el almacenamiento local de la Lambda
-                    with open(ruta_estaciones, 'r', encoding='utf-8') as f:
-                        catalogo_estaciones = json.load(f).get('stations', [])
-                        
-                    # 2. Descargamos SOLO el status dinámico (disponibilidad de bicis)
-                    res_status = requests.get("https://gbfs.mex.lyftbikes.com/gbfs/en/station_status.json", timeout=3)
+                    # 2. Descargamos la disponibilidad de bicis
+                    res_status = requests.get("https://gbfs.mex.lyftbikes.com/gbfs/en/station_status.json", timeout=4)
                     
-                    if res_status.status_code == 200:
+                    if res_info.status_code == 200 and res_status.status_code == 200:
+                        catalogo_estaciones = res_info.json().get('data', {}).get('stations', [])
                         status_data = res_status.json().get('data', {}).get('stations', [])
                         
                         # Diccionario ultra rápido de disponibilidad { "ID": bicis_disp }
-                        status_dict = {st['station_id']: st['num_bikes_available'] for st in status_data}
+                        status_dict = {str(st['station_id']): st['num_bikes_available'] for st in status_data}
                         
                         estaciones_mapeadas = 0
-                        # 3. Iteramos nuestro catálogo local y lo inyectamos en la malla
+                        
+                        # 3. Iteramos el catálogo que acabamos de descargar
                         for st in catalogo_estaciones:
-                            st_id = str(st['id'])
+                            st_id = str(st['station_id'])
                             lat_eco = float(st['lat'])
                             lon_eco = float(st['lon'])
                             
-                            # Si no hay datos dinámicos para esta estación (está apagada), asumimos 0
                             bicis_disp = status_dict.get(st_id, 0)
                             
-                            # Usamos el 'tree' de la malla para hallar a qué celda pertenece
-                            _, idx_cercano = tree.query([lat_eco, lon_eco])
-                            celda_destino = output_cells[idx_cercano]
-                            
-                            # Inicializamos el bloque de movilidad si es la primera bici en esa celda
-                            if "movilidad" not in celda_destino:
-                                celda_destino["movilidad"] = {"ecobicis_en_celda": []}
+                            # Optimización: Solo inyectamos a la malla si la estación tiene bicis disponibles
+                            if bicis_disp > 0:
+                                # Usamos el 'tree' de la malla para hallar a qué celda pertenece
+                                _, idx_cercano = tree.query([lat_eco, lon_eco])
+                                celda_destino = output_cells[idx_cercano]
                                 
-                            celda_destino["movilidad"]["ecobicis_en_celda"].append({
-                                "id": st_id,
-                                "nombre": st['name'],
-                                "disponibles": bicis_disp
-                            })
-                            estaciones_mapeadas += 1
-                            
-                        print(f"✅ {estaciones_mapeadas} estaciones asignadas espacialmente a sus celdas.")
+                                # Inicializamos el bloque de movilidad si es la primera bici en esa celda
+                                if "movilidad" not in celda_destino:
+                                    celda_destino["movilidad"] = {"ecobicis_en_celda": []}
+                                    
+                                celda_destino["movilidad"]["ecobicis_en_celda"].append({
+                                    "id": st_id,
+                                    "nombre": st.get('name', 'Estación Ecobici'),
+                                    "disponibles": bicis_disp
+                                })
+                                estaciones_mapeadas += 1
+                                
+                        print(f"✅ {estaciones_mapeadas} estaciones activas asignadas espacialmente a sus celdas.")
+                    else:
+                        print(f"⚠️ Error en API Ecobici. Info: {res_info.status_code}, Status: {res_status.status_code}")
+                        
                 except Exception as e:
                     print(f"⚠️ Error al cruzar Ecobici con la malla (ignorado): {e}")
 
