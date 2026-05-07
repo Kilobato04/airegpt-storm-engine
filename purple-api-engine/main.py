@@ -60,9 +60,9 @@ def ejecutar_interpolacion(df_puntos, malla_base):
 
 # 2. 🚨 FIX: ESTA ES LA NUEVA FUNCIÓN (Exclusiva para el Pronóstico / Open-Meteo)
 def ejecutar_interpolacion_atmosferica(df_puntos, malla_base):
-    """Interpolación RBF 3D (Lat, Lon, Altitud) Anisotrópica (Viento) para Pronóstico"""
+    """Interpolación RBF 2D Anisotrópica (Viento) con Manto Continuo"""
     try:
-        # 1. Extraer viento promedio de la zona de lluvia
+        # 1. Extraer viento dominante de las zonas con lluvia
         lluvia_activa = df_puntos[df_puntos['rain'] > 0]
         if len(lluvia_activa) > 0:
             mean_wind_speed = lluvia_activa['wind_speed'].mean()
@@ -71,9 +71,11 @@ def ejecutar_interpolacion_atmosferica(df_puntos, malla_base):
             mean_wind_speed = 0
             mean_wind_dir = 0
 
-        # 2. Factor de estiramiento por viento (Deformación de coordenadas)
+        # 2. Deformación Espacial (Viento)
         angulo_rad = math.radians(270 - mean_wind_dir) 
-        stretch_factor = 1.0 + (mean_wind_speed / 15.0)
+        
+        # Suavizamos el estiramiento para que no rompa la matriz
+        stretch_factor = 1.0 + (mean_wind_speed / 25.0)
 
         def deformar_espacio(lon, lat):
             lon_c = lon - df_puntos['lon'].mean()
@@ -83,33 +85,28 @@ def ejecutar_interpolacion_atmosferica(df_puntos, malla_base):
             y_rot = y_rot * stretch_factor 
             return x_rot, y_rot
 
+        # Aplicamos deformación 2D
         x_pts, y_pts = deformar_espacio(df_puntos['lon'], df_puntos['lat'])
         x_malla, y_malla = deformar_espacio(malla_base['lon'], malla_base['lat'])
-        
-        # 3. Factor Orográfico (Altitud como barrera Z) SUAVIZADO
-        z_pts = df_puntos['altitud'] / 35000.0
-        z_malla = malla_base['altitud'] / 35000.0
 
-        # 4. RBF Ajustada (CALIBRACIÓN ANTI-ISLAS)
-        # epsilon=0.012 (fuerza a que los nodos lejanos se toquen)
-        # smooth=0.25 (derrite los picos duros para hacer manchas fluidas)
-        rbf = Rbf(x_pts, y_pts, z_pts, df_puntos['rain'], 
-                  function='gaussian', epsilon=0.012, smooth=0.25)
+        # 3. EL NUEVO MOTOR: 'linear' en lugar de 'gaussian'
+        # 'linear' crea un manto continuo (como una tienda de campaña) entre los nodos. 
+        # Es inmune al "efecto isla" porque no cae a cero abruptamente. Ignora 'epsilon'.
+        rbf = Rbf(x_pts, y_pts, df_puntos['rain'], function='linear', smooth=0.1)
         
-        prediccion = np.round(np.maximum(0, rbf(x_malla, y_malla, z_malla)), 2)
+        prediccion = np.round(np.maximum(0, rbf(x_malla, y_malla)), 2)
         
-        # 5. Umbral de limpieza permisivo
-        # Bajamos a 0.05 para no borrar los "puentes" finos que conectan a las nubes
-        prediccion[prediccion < 0.05] = 0
+        # 4. Limpieza de brisa fantasma (más permisivo para mantener las nubes unidas)
+        prediccion[prediccion < 0.1] = 0 
         
         return prediccion
-        
+
     except Exception as e:
         print(f"⚠️ Caída a KDTree de emergencia (Atmosférico): {e}")
         tree = cKDTree(df_puntos[['lon', 'lat']].values)
         dist, _ = tree.query(malla_base[['lon', 'lat']].values)
         vals = np.zeros(len(malla_base))
-        vals[dist < 0.02] = df_puntos['rain'].max()
+        vals[dist < 0.03] = df_puntos['rain'].max() # Suavizamos el fallback también
         return vals
 
 def fetch_open_meteo():
