@@ -42,6 +42,7 @@ def cargar_riesgos_historicos():
             RIESGOS_CACHE = []
     return RIESGOS_CACHE
 
+# 1. ESTA ES TU FUNCIÓN ORIGINAL (No la tocamos, se queda para el Modelo Live / SACMEX)
 def ejecutar_interpolacion(df_puntos, malla_base):
     """Interpolación RBF Gaussiana centralizada"""
     try:
@@ -51,6 +52,54 @@ def ejecutar_interpolacion(df_puntos, malla_base):
         prediccion[prediccion < 0.15] = 0
         return prediccion
     except:
+        tree = cKDTree(df_puntos[['lon', 'lat']].values)
+        dist, _ = tree.query(malla_base[['lon', 'lat']].values)
+        vals = np.zeros(len(malla_base))
+        vals[dist < 0.02] = df_puntos['rain'].max()
+        return vals
+
+# 2. 🚨 FIX: ESTA ES LA NUEVA FUNCIÓN (Exclusiva para el Pronóstico / Open-Meteo)
+def ejecutar_interpolacion_atmosferica(df_puntos, malla_base):
+    """Interpolación RBF 3D (Lat, Lon, Altitud) Anisotrópica (Viento) para Pronóstico"""
+    try:
+        # 1. Extraer viento promedio de la zona de lluvia
+        lluvia_activa = df_puntos[df_puntos['rain'] > 0]
+        if len(lluvia_activa) > 0:
+            mean_wind_speed = lluvia_activa['wind_speed'].mean()
+            mean_wind_dir = lluvia_activa['wind_dir'].mean()
+        else:
+            mean_wind_speed = 0
+            mean_wind_dir = 0
+
+        # 2. Factor de estiramiento por viento (Deformación de coordenadas)
+        angulo_rad = math.radians(270 - mean_wind_dir) 
+        stretch_factor = 1.0 + (mean_wind_speed / 15.0)
+
+        def deformar_espacio(lon, lat):
+            lon_c = lon - df_puntos['lon'].mean()
+            lat_c = lat - df_puntos['lat'].mean()
+            x_rot = lon_c * math.cos(angulo_rad) + lat_c * math.sin(angulo_rad)
+            y_rot = -lon_c * math.sin(angulo_rad) + lat_c * math.cos(angulo_rad)
+            y_rot = y_rot * stretch_factor 
+            return x_rot, y_rot
+
+        x_pts, y_pts = deformar_espacio(df_puntos['lon'], df_puntos['lat'])
+        x_malla, y_malla = deformar_espacio(malla_base['lon'], malla_base['lat'])
+        
+        # 3. Factor Orográfico (Altitud como barrera Z)
+        z_pts = df_puntos['altitud'] / 10000.0
+        z_malla = malla_base['altitud'] / 10000.0
+
+        # 4. RBF Ajustada (smooth más alto para fusionar nubes)
+        rbf = Rbf(x_pts, y_pts, z_pts, df_puntos['rain'], 
+                  function='gaussian', epsilon=0.045, smooth=0.15)
+        
+        prediccion = np.round(np.maximum(0, rbf(x_malla, y_malla, z_malla)), 2)
+        prediccion[prediccion < 0.15] = 0
+        return prediccion
+        
+    except Exception as e:
+        print(f"⚠️ Caída a KDTree de emergencia (Atmosférico): {e}")
         tree = cKDTree(df_puntos[['lon', 'lat']].values)
         dist, _ = tree.query(malla_base[['lon', 'lat']].values)
         vals = np.zeros(len(malla_base))
@@ -176,6 +225,16 @@ def lambda_handler(event, context):
     grid['lon'] = grid.geometry.x
     grid['lat'] = grid.geometry.y
 
+    # ⛰️ FIX OROGRÁFICO: Extraemos la altitud y metadatos reales del GeoJSON de la ZMVM
+    grid['altitud'] = [f['properties'].get('elevation', 2250) for f in malla_json['features']]
+    grid['colonia'] = [f['properties'].get('colonia', 'Sin Colonia') for f in malla_json['features']]
+    grid['municipio'] = [f['properties'].get('municipio', 'CDMX/Edomex') for f in malla_json['features']]
+    grid['estado'] = [f['properties'].get('estado', 'CDMX') for f in malla_json['features']]
+    
+    # 🌲 Pre-calculamos el árbol espacial para cruzar Open-Meteo vs GeoJSON a velocidad luz
+    from scipy.spatial import cKDTree
+    tree_malla_global = cKDTree(grid[['lon', 'lat']].values)
+
     # ==========================================
     # CASO A: PRONÓSTICO (Cada 1 hora)
     # ==========================================
@@ -213,21 +272,40 @@ def lambda_handler(event, context):
         }
 
         try:
-            # 5. El Motor IA calcula desde el Índice 1 (ej. 18:00) hasta el 6 (ej. 23:00)
-            # El paso 0 lo saltamos porque es el "Presente" que ya tienes en el otro modelo.
+            # 5. El Motor IA Atmosférico (De T+1 a T+6)
             for i in range(1, 7): 
                 datos_hora = []
-                hora_iso = ""
+                hora_iso = forecast_raw[0]['hourly']['time'][i]
+                
                 for p in forecast_raw:
-                    hora_iso = p['hourly']['time'][i]
-                    datos_hora.append({'lat': p['lat'], 'lon': p['lon'], 'rain': p['hourly']['precipitation'][i]})
+                    # 📍 GATILLO ESPACIAL: Buscamos a qué celda de nuestro GeoJSON pertenece este nodo
+                    _, idx_nodo = tree_malla_global.query([p['lon'], p['lat']])
+                    
+                    # ⛰️ Heredamos la altitud REAL y constante de la malla (no de Open-Meteo)
+                    alt_nodo = grid.iloc[idx_nodo]['altitud']
+                    
+                    datos_hora.append({
+                        'lat': p['lat'], 
+                        'lon': p['lon'], 
+                        'rain': p['hourly']['precipitation'][i],
+                        'wind_speed': p['hourly']['wind_speed_10m'][i],
+                        'wind_dir': p['hourly']['wind_direction_10m'][i],
+                        'altitud': alt_nodo
+                    })
                 
-                print(f"⏳ Calculando IA Espacial para: {hora_iso}...")
+                print(f"🌪️ Simulando Dinámica Atmosférica para: {hora_iso}...")
                 df_h = pd.DataFrame(datos_hora)
-                lluvia_proyectada = ejecutar_interpolacion(df_h, grid)
                 
+                # 🚨 FIX: Invocamos al NUEVO motor 3D (el que agregamos en el Corte 2)
+                lluvia_proyectada = ejecutar_interpolacion_atmosferica(df_h, grid)
+                
+                # Empaquetamos la lluvia proyectada (Sparse Array) para enviarla al Frontend
                 bloque_futuro["time_steps"][hora_iso] = [
-                    {"lat": round(grid.iloc[idx]['lat'], 5), "lon": round(grid.iloc[idx]['lon'], 5), "mm": float(lluvia_proyectada[idx])}
+                    {
+                        "lat": round(grid.iloc[idx]['lat'], 5), 
+                        "lon": round(grid.iloc[idx]['lon'], 5), 
+                        "mm": float(lluvia_proyectada[idx])
+                    }
                     for idx in range(len(lluvia_proyectada)) if lluvia_proyectada[idx] > 0
                 ]
 
