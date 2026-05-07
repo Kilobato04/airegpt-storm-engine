@@ -421,8 +421,16 @@ def lambda_handler(event, context):
                 # ==========================================
                 # 🚲 7. SNAPSHOT DE ECOBICI (HÍBRIDO: ESTÁTICO + DINÁMICO)
                 # ==========================================
-                ruta_estaciones = os.path.join(os.environ['LAMBDA_TASK_ROOT'], 'ecobici_stations.json')
                 try:
+                    # --- 🔍 INICIO DE LOGS DE DIAGNÓSTICO ---
+                    directorio_base = os.environ.get('LAMBDA_TASK_ROOT', '/var/task')
+                    print(f"🔍 [DEBUG] Directorio base de Lambda: {directorio_base}")
+                    print(f"🔍 [DEBUG] Archivos en la raíz: {os.listdir(directorio_base)}")
+                    
+                    ruta_estaciones = os.path.join(directorio_base, 'ecobici_stations.json')
+                    print(f"🔍 [DEBUG] Intentando abrir exactamente: {ruta_estaciones}")
+                    # --- 🔍 FIN DE LOGS DE DIAGNÓSTICO ---
+
                     print("🚲 Obteniendo status dinámico de Ecobici...")
                     
                     # 1. Cargamos el catálogo estático desde el almacenamiento local de la Lambda
