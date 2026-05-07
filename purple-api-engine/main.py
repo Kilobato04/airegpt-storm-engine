@@ -421,11 +421,12 @@ def lambda_handler(event, context):
                 # ==========================================
                 # 🚲 7. SNAPSHOT DE ECOBICI (HÍBRIDO: ESTÁTICO + DINÁMICO)
                 # ==========================================
+                ruta_estaciones = os.path.join(os.environ['LAMBDA_TASK_ROOT'], 'ecobici_stations.json')
                 try:
                     print("🚲 Obteniendo status dinámico de Ecobici...")
                     
                     # 1. Cargamos el catálogo estático desde el almacenamiento local de la Lambda
-                    with open('/var/task/ecobici_stations.json', 'r', encoding='utf-8') as f:
+                    with open(ruta_estaciones, 'r', encoding='utf-8') as f:
                         catalogo_estaciones = json.load(f).get('stations', [])
                         
                     # 2. Descargamos SOLO el status dinámico (disponibilidad de bicis)
