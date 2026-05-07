@@ -86,16 +86,22 @@ def ejecutar_interpolacion_atmosferica(df_puntos, malla_base):
         x_pts, y_pts = deformar_espacio(df_puntos['lon'], df_puntos['lat'])
         x_malla, y_malla = deformar_espacio(malla_base['lon'], malla_base['lat'])
         
-        # 3. Factor Orográfico (Altitud como barrera Z)
-        z_pts = df_puntos['altitud'] / 10000.0
-        z_malla = malla_base['altitud'] / 10000.0
+        # 3. Factor Orográfico (Altitud como barrera Z) SUAVIZADO
+        z_pts = df_puntos['altitud'] / 35000.0
+        z_malla = malla_base['altitud'] / 35000.0
 
-        # 4. RBF Ajustada (smooth más alto para fusionar nubes)
+        # 4. RBF Ajustada (CALIBRACIÓN ANTI-ISLAS)
+        # epsilon=0.012 (fuerza a que los nodos lejanos se toquen)
+        # smooth=0.25 (derrite los picos duros para hacer manchas fluidas)
         rbf = Rbf(x_pts, y_pts, z_pts, df_puntos['rain'], 
-                  function='gaussian', epsilon=0.045, smooth=0.15)
+                  function='gaussian', epsilon=0.012, smooth=0.25)
         
         prediccion = np.round(np.maximum(0, rbf(x_malla, y_malla, z_malla)), 2)
-        prediccion[prediccion < 0.15] = 0
+        
+        # 5. Umbral de limpieza permisivo
+        # Bajamos a 0.05 para no borrar los "puentes" finos que conectan a las nubes
+        prediccion[prediccion < 0.05] = 0
+        
         return prediccion
         
     except Exception as e:
