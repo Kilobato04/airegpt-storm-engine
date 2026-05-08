@@ -584,7 +584,9 @@ def lambda_handler(event, context):
                                 celda_destino["movilidad"]["ecobicis_en_celda"].append({
                                     "id": st_id,
                                     "nombre": st.get('name', 'Estación Ecobici'),
-                                    "disponibles": bicis_disp
+                                    "disponibles": bicis_disp,
+                                    "lat": lat_eco,  # 🚨 NUEVO: Mandamos la latitud exacta
+                                    "lon": lon_eco   # 🚨 NUEVO: Mandamos la longitud exacta
                                 })
                                 estaciones_mapeadas += 1
                                 
