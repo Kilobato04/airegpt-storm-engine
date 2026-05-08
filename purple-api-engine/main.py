@@ -456,21 +456,60 @@ def lambda_handler(event, context):
                 else:
                     grid['rain_predicted'] = 0.0
                 
+                # 🚨 NUEVO: Diccionario rápido del estado previo para comparar CELDA vs CELDA
+                dict_previo = {}
+                # Usamos estado_previo (que leíste en el paso 1 de la Lambda) para armar el mapa del pasado
+                if max_rain_previo > 0.0 and 'values' in estado_previo:
+                    for c in estado_previo['values']:
+                        dict_previo[f"{c['lat']}_{c['lon']}"] = float(c.get('rain_mm_h', 0.0))
+
                 output_cells = []
                 tree = cKDTree(grid[['lat', 'lon']].values)
                 
-                # 5. Inicializamos las celdas
+                # 5. Inicializamos las celdas con DERIVADA PREDICTIVA LOCAL
                 for idx, row in grid.iterrows():
-                    rain_val = row['rain_predicted']
+                    lat_c = round(row['lat'], 5)
+                    lon_c = round(row['lon'], 5)
+                    lluvia_actual = float(row['rain_predicted'])
+                    
+                    # Extraer lluvia de hace ~3 min en esta misma coordenada exacta
+                    lluvia_previa = dict_previo.get(f"{lat_c}_{lon_c}", 0.0)
+                    
+                    # Cálculo de la derivada local (mm/min)
+                    delta_rain_local = lluvia_actual - lluvia_previa
+                    derivada_local = 0.0
+                    
+                    # Evitamos divisiones por cero o crecimientos negativos
+                    if delta_time_min > 0 and delta_rain_local > 0:
+                        derivada_local = delta_rain_local / delta_time_min
+                    
+                    # 🔮 PROYECCIÓN A 15 MINUTOS (La magia predictiva)
+                    lluvia_proyectada_15m = lluvia_actual + (derivada_local * 15.0)
+                    
+                    # 🚨 ALERTA BINARIA (Punto de No Retorno >= 13.1 mm/h)
+                    alerta_celda = "NORMAL"
+                    if lluvia_proyectada_15m >= 13.1: 
+                        alerta_celda = "CRITICA" 
+
+                    # Determinamos el nivel de riesgo estético para los colores del Frontend
+                    if alerta_celda == "CRITICA":
+                        nivel_riesgo = "Crítico"
+                    elif lluvia_actual >= 7.1:
+                        nivel_riesgo = "Alto"
+                    elif lluvia_actual >= 3.1:
+                        nivel_riesgo = "Moderado"
+                    else:
+                        nivel_riesgo = "Ligero"
+
                     output_cells.append({
-                        "lat": round(row['lat'], 5), "lon": round(row['lon'], 5),
+                        "lat": lat_c, "lon": lon_c,
                         "col": str(row.get('colonia', 'Sin Colonia')),
                         "mun": str(row.get('municipio', 'CDMX/Edomex')),
                         "edo": str(row.get('estado', 'CDMX')),
-                        "rain_mm_h": float(rain_val),
-                        "derivative_mm_min": 0.0,
-                        "risk": "Moderado" if rain_val > 3 else "Ligero",
-                        "alert_status": "NORMAL",
+                        "rain_mm_h": round(lluvia_actual, 2),
+                        "derivative_mm_min": round(derivada_local, 3), 
+                        "risk": nivel_riesgo,
+                        "alert_status": alerta_celda,
                         "station": None,
                         "source": "Modelo Espacial (RBF)"
                     })
@@ -598,14 +637,27 @@ def lambda_handler(event, context):
                     print(f"⚠️ Error al cruzar Ecobici con la malla (ignorado): {e}")
 
                 # ==========================================
-                # 8. EMPAQUETADO FINAL (Lluvia + Riesgo + Ecobici Integrado)
+                # 8. EMPAQUETADO FINAL (Localizado y Sumarizado)
                 # ==========================================
+                # 1. Buscamos la peor celda para el resumen
+                celdas_con_lluvia = [c for c in output_cells if c['rain_mm_h'] > 0]
+                
+                peor_celda = {"rain_mm_h": 0, "col": "N/A", "mun": "N/A"}
+                if celdas_con_lluvia:
+                    peor_celda = max(celdas_con_lluvia, key=lambda x: x['rain_mm_h'])
+
+                # 2. Verificamos si al menos una celda en toda la ciudad está en CRITICA
+                hay_alerta_critica = any(c['alert_status'] == "CRITICA" for c in output_cells)
+
+                # 3. Armamos el payload final
                 final_payload = {
                     "timestamp": ahora.isoformat(),
                     "metadata": {
-                        "lluvia_max": max_rain_actual,
-                        "derivada_max": round(derivada, 3),
-                        "alerta_global": alerta_status
+                        "alerta_global": "CRITICA" if hay_alerta_critica else "NORMAL",
+                        "pico_lluvia_max": peor_celda['rain_mm_h'],
+                        "ubicacion_pico": f"{peor_celda.get('col', 'N/A')}, {peor_celda.get('mun', 'N/A')}",
+                        "unidades": "mm/h",
+                        "horizonte_prediccion": "15min"
                     },
                     "values": output_cells
                 }
