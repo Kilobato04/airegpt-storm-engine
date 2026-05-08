@@ -60,53 +60,96 @@ def ejecutar_interpolacion(df_puntos, malla_base):
 
 # 2. 🚨 FIX: ESTA ES LA NUEVA FUNCIÓN (Exclusiva para el Pronóstico / Open-Meteo)
 def ejecutar_interpolacion_atmosferica(df_puntos, malla_base):
-    """Interpolación RBF 2D Anisotrópica (Viento) con Manto Continuo"""
+    """Modelo SCIT (Storm Cell Identification Tracking) con Kernels Gaussianos"""
+    import numpy as np
+    import math
+    from scipy.spatial import cKDTree
+    
     try:
-        # 1. Extraer viento dominante de las zonas con lluvia
-        lluvia_activa = df_puntos[df_puntos['rain'] > 0]
-        if len(lluvia_activa) > 0:
-            mean_wind_speed = lluvia_activa['wind_speed'].mean()
-            mean_wind_dir = lluvia_activa['wind_dir'].mean()
-        else:
-            mean_wind_speed = 0
-            mean_wind_dir = 0
-
-        # 2. Deformación Espacial (Viento)
-        angulo_rad = math.radians(270 - mean_wind_dir) 
+        # 1. Identificar nodos activos (Umbral mínimo para existir)
+        nodos_humedos = df_puntos[df_puntos['rain'] >= 0.15].reset_index(drop=True)
         
-        # Suavizamos el estiramiento para que no rompa la matriz
-        stretch_factor = 1.0 + (mean_wind_speed / 25.0)
-
-        def deformar_espacio(lon, lat):
-            lon_c = lon - df_puntos['lon'].mean()
-            lat_c = lat - df_puntos['lat'].mean()
-            x_rot = lon_c * math.cos(angulo_rad) + lat_c * math.sin(angulo_rad)
-            y_rot = -lon_c * math.sin(angulo_rad) + lat_c * math.cos(angulo_rad)
-            y_rot = y_rot * stretch_factor 
-            return x_rot, y_rot
-
-        # Aplicamos deformación 2D
-        x_pts, y_pts = deformar_espacio(df_puntos['lon'], df_puntos['lat'])
-        x_malla, y_malla = deformar_espacio(malla_base['lon'], malla_base['lat'])
-
-        # 3. EL NUEVO MOTOR: 'linear' en lugar de 'gaussian'
-        # 'linear' crea un manto continuo (como una tienda de campaña) entre los nodos. 
-        # Es inmune al "efecto isla" porque no cae a cero abruptamente. Ignora 'epsilon'.
-        rbf = Rbf(x_pts, y_pts, df_puntos['rain'], function='linear', smooth=0.1)
+        # Grid final inicializado en 0 (Lienzo en negro)
+        prediccion_global = np.zeros(len(malla_base))
         
-        prediccion = np.round(np.maximum(0, rbf(x_malla, y_malla)), 2)
+        if len(nodos_humedos) == 0:
+            return prediccion_global # Si no hay lluvia en el valle, entregamos el lienzo limpio
+            
+        lon_malla = malla_base['lon'].values
+        lat_malla = malla_base['lat'].values
         
-        # 4. Limpieza de brisa fantasma (más permisivo para mantener las nubes unidas)
-        prediccion[prediccion < 0.1] = 0 
+        # 2. Algoritmo de Clustering Espacial (Vecinos a menos de ~8km o 0.075 grados)
+        coords = nodos_humedos[['lon', 'lat']].values
+        tree = cKDTree(coords)
+        pares = tree.query_pairs(r=0.075)
         
-        return prediccion
+        # Construir grupos (Connected Components) nativamente
+        adj = {i: [] for i in range(len(coords))}
+        for i, j in pares:
+            adj[i].append(j)
+            adj[j].append(i)
+            
+        clusters = []
+        visitados = set()
+        for i in range(len(coords)):
+            if i not in visitados:
+                cluster = []
+                cola = [i]
+                while cola:
+                    nodo = cola.pop(0)
+                    if nodo not in visitados:
+                        visitados.add(nodo)
+                        cluster.append(nodo)
+                        cola.extend(adj[nodo])
+                clusters.append(cluster)
+        
+        # 3. Modelación de Células de Tormenta por Cluster
+        for indices in clusters:
+            cluster_data = nodos_humedos.iloc[indices]
+            es_tormenta = len(indices) >= 3
+            
+            # Viento local extraído SÓLO de esta tormenta
+            viento_vel = cluster_data['wind_speed'].mean()
+            viento_dir = cluster_data['wind_dir'].mean()
+            
+            # Geometría de la nube
+            angulo_rad = math.radians(270 - viento_dir)
+            stretch_factor = 1.0 + (viento_vel / 15.0) if es_tormenta else 1.0 + (viento_vel / 35.0)
+            sigma = 0.038 if es_tormenta else 0.022 # Radio base (0.038 grados ~ 4.2 km)
+
+            # Generar el Kernel (Campana de Gauss) para cada nodo del cluster
+            for _, fila in cluster_data.iterrows():
+                lon_c = lon_malla - fila['lon']
+                lat_c = lat_malla - fila['lat']
+                
+                # Rotar la malla hacia la dirección del viento local
+                x_rot = lon_c * math.cos(angulo_rad) + lat_c * math.sin(angulo_rad)
+                y_rot = -lon_c * math.sin(angulo_rad) + lat_c * math.cos(angulo_rad)
+                
+                # Estirar la nube a lo largo del eje direccional
+                x_rot = x_rot / stretch_factor
+                
+                # Distancia deformada
+                dist_sq = x_rot**2 + y_rot**2
+                
+                # Pinta la Campana de Lluvia que va cayendo a 0 suavemente
+                intensidad = fila['rain'] * np.exp(-dist_sq / (2 * sigma**2))
+                
+                # Fusión líquida: Toma el valor más alto entre lo que ya había y la nueva nube
+                prediccion_global = np.maximum(prediccion_global, intensidad)
+        
+        # 4. Limpieza final de colas (Recortar los bordes casi invisibles)
+        prediccion_global = np.round(prediccion_global, 2)
+        prediccion_global[prediccion_global < 0.15] = 0
+        
+        return prediccion_global
 
     except Exception as e:
         print(f"⚠️ Caída a KDTree de emergencia (Atmosférico): {e}")
         tree = cKDTree(df_puntos[['lon', 'lat']].values)
         dist, _ = tree.query(malla_base[['lon', 'lat']].values)
         vals = np.zeros(len(malla_base))
-        vals[dist < 0.03] = df_puntos['rain'].max() # Suavizamos el fallback también
+        vals[dist < 0.03] = df_puntos['rain'].max()
         return vals
 
 def fetch_open_meteo():
