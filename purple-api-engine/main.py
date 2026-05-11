@@ -155,9 +155,11 @@ def ejecutar_interpolacion_atmosferica(df_puntos, malla_base):
 def fetch_open_meteo():
     """Descarga el pronóstico en micro-lotes para evitar el Error 502 de Open-Meteo en horas pico"""
     try:
-        print("🌐 Generando malla de 100 puntos...")
-        latS, latN, lonW, lonE = 19.155, 19.772, -99.352, -98.867
-        steps = 9
+        print("🌐 Extendiendo malla al Sur para incluir Parres (ID: 43)...")
+        # 🚨 FIX GEOGRÁFICO: Bajamos latS a 18.950
+        latS, latN, lonW, lonE = 18.950, 19.772, -99.352, -98.867
+        # 🚨 FIX DE RESOLUCIÓN: Subimos a 12 steps para mantener el ancho de la celda
+        steps = 12
         all_coords = []
         for i in range(steps + 1):
             lat = latS + (i * (latN - latS) / steps)
