@@ -670,9 +670,27 @@ def lambda_handler(event, context):
 
                 print("✅ Modelado PRESENTE completado y subido a S3.")
                 
-                # AÑADIMOS EL NUEVO REGISTRO AL HISTORIAL
-                # (Al hacer esto, las bicis de hoy quedan congeladas en este frame)
-                historial_24h.append(final_payload)
+                # ==========================================
+                # 🚨 FIX NINJA 1: COMPRESIÓN DEL HISTORIAL 
+                # ==========================================
+                # 1. Filtramos: Solo guardamos celdas con lluvia (> 0)
+                # 2. Descartamos: Zonas de riesgo, Ecobici y toda la metadata extra
+                celdas_historico_ligeras = [
+                    {
+                        "lat": c["lat"],
+                        "lon": c["lon"],
+                        "rain_mm_h": c["rain_mm_h"]
+                    }
+                    for c in output_cells if c["rain_mm_h"] > 0
+                ]
+
+                payload_historico = {
+                    "timestamp": ahora.isoformat(),
+                    "values": celdas_historico_ligeras
+                }
+
+                # Añadimos este frame ultra-ligero al historial
+                historial_24h.append(payload_historico)
                 nuevo_registro_valido = True
             # === FIN RUTA ACTIVA ===
 
@@ -709,18 +727,32 @@ def lambda_handler(event, context):
                 matriz_acumulada['timestamp'] = ahora.isoformat()
                 matriz_acumulada['metadata']['tipo'] = "ACUMULADO_24H"
                 
-                # Inicializamos todo en 0.0
+                # ==========================================
+                # 🚨 FIX NINJA 2: SUMA POR COORDENADAS EXACTAS
+                # ==========================================
+                dict_acumulado = {}
+                
+                # Inicializamos todo en 0.0 usando 'lat_lon' como llave maestra
+                # y limpiamos bloques pesados (como Ecobici) del mapa acumulado
                 for celda in matriz_acumulada['values']:
                     celda['rain_mm_h'] = 0.0
                     celda['derivative_mm_min'] = 0.0
+                    celda.pop('riesgo_historico', None)
+                    celda.pop('movilidad', None)
+                    llave = f"{celda['lat']}_{celda['lon']}"
+                    dict_acumulado[llave] = 0.0
 
-                # Sumamos la lluvia de cada celda
+                # Sumamos buscando la coordenada exacta en la dieta de datos
                 for registro in historial_24h:
-                    for i, celda in enumerate(registro['values']):
-                        matriz_acumulada['values'][i]['rain_mm_h'] += float(celda.get('rain_mm_h', 0.0))
+                    for celda in registro['values']:
+                        llave = f"{celda['lat']}_{celda['lon']}"
+                        if llave in dict_acumulado:
+                            dict_acumulado[llave] += float(celda.get('rain_mm_h', 0.0))
 
+                # Reinyectamos los valores al array final para S3
                 for celda in matriz_acumulada['values']:
-                    celda['rain_mm_h'] = round(celda['rain_mm_h'], 2)
+                    llave = f"{celda['lat']}_{celda['lon']}"
+                    celda['rain_mm_h'] = round(dict_acumulado[llave], 2)
 
                 s3_client.put_object(
                     Bucket=S3_BUCKET, Key=S3_KEY_ACCUMULATED,
