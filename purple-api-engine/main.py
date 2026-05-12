@@ -686,9 +686,22 @@ def lambda_handler(event, context):
                     for c in output_cells if c["rain_mm_h"] > 0
                 ]
 
+                # 🚨 NUEVO: Extraemos los datos duros de los sensores físicos para calibración futura
+                estaciones_crudas = [
+                    {
+                        "id": s["id"],
+                        "nombre": s["nombre"],
+                        "lat": float(s["latitud"]),
+                        "lon": float(s["longitud"]),
+                        "rain_mm_h": float(s["acumulado_actual"])
+                    }
+                    for s in lluvia_activa
+                ]
+
                 payload_historico = {
                     "timestamp": ahora.isoformat(),
-                    "values": celdas_historico_ligeras
+                    "values": celdas_historico_ligeras,
+                    "stations": estaciones_crudas  # <--- Inyectamos el Ground Truth
                 }
 
                 # Añadimos este frame ultra-ligero al historial
@@ -730,12 +743,12 @@ def lambda_handler(event, context):
                 matriz_acumulada['metadata']['tipo'] = "ACUMULADO_24H"
                 
                 # ==========================================
-                # 🚨 FIX NINJA 2: SUMA POR COORDENADAS EXACTAS
+                # 🚨 FIX NINJA 2: SUMA POR COORDENADAS EXACTAS Y SENSORES
                 # ==========================================
                 dict_acumulado = {}
+                dict_estaciones = {} # 🚨 Memoria para las estaciones crudas
                 
                 # Inicializamos todo en 0.0 usando 'lat_lon' como llave maestra
-                # y limpiamos bloques pesados (como Ecobici) del mapa acumulado
                 for celda in matriz_acumulada['values']:
                     celda['rain_mm_h'] = 0.0
                     celda['derivative_mm_min'] = 0.0
@@ -744,17 +757,35 @@ def lambda_handler(event, context):
                     llave = f"{celda['lat']}_{celda['lon']}"
                     dict_acumulado[llave] = 0.0
 
-                # Sumamos buscando la coordenada exacta en la dieta de datos
+                # Sumamos iterando sobre la línea de tiempo de 24h
                 for registro in historial_24h:
+                    
+                    # A. Sumamos las celdas RBF
                     for celda in registro['values']:
                         llave = f"{celda['lat']}_{celda['lon']}"
                         if llave in dict_acumulado:
                             dict_acumulado[llave] += float(celda.get('rain_mm_h', 0.0))
+                            
+                    # B. 🚨 NUEVO: Sumamos el registro crudo de las estaciones
+                    for st in registro.get('stations', []):
+                        st_id = st['id']
+                        if st_id not in dict_estaciones:
+                            # La agregamos dinámicamente si no existía
+                            dict_estaciones[st_id] = {
+                                "id": st_id, "nombre": st["nombre"],
+                                "lat": st["lat"], "lon": st["lon"], "rain_mm_h": 0.0
+                            }
+                        dict_estaciones[st_id]['rain_mm_h'] += float(st.get('rain_mm_h', 0.0))
 
-                # Reinyectamos los valores al array final para S3
+                # Reinyectamos los valores al array final de la malla
                 for celda in matriz_acumulada['values']:
                     llave = f"{celda['lat']}_{celda['lon']}"
                     celda['rain_mm_h'] = round(dict_acumulado[llave], 2)
+                    
+                # 🚨 NUEVO: Inyectamos el catálogo de estaciones acumuladas al JSON final
+                for st in dict_estaciones.values():
+                    st['rain_mm_h'] = round(st['rain_mm_h'], 2)
+                matriz_acumulada['stations'] = list(dict_estaciones.values())
 
                 s3_client.put_object(
                     Bucket=S3_BUCKET, Key=S3_KEY_ACCUMULATED,
