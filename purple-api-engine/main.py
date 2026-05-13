@@ -403,6 +403,24 @@ def lambda_handler(event, context):
                 print(f"❌ Error crítico leyendo origen en S3: {e}")
                 return {"statusCode": 500, "body": f"Error de lectura S3: {str(e)}"}
 
+            # ==========================================
+            # 🚨 FIX 1: INYECCIÓN CHAAK (PIPELINE AISLADO ULTRARRÁPIDO)
+            # ==========================================
+            try:
+                print("🛰️ Consultando Mirror API (CHAAK) para datos frescos...")
+                res_chaak = requests.get(MIRROR_API_URL, timeout=5)
+                if res_chaak.status_code == 200:
+                    chaak_data = res_chaak.json().get('data', [])
+                    # 1. Obtenemos los IDs frescos de CHAAK
+                    ids_chaak = [str(c.get('id')) for c in chaak_data]
+                    # 2. Purgamos cualquier versión "vieja" de estas estaciones que haya venido de SACMEX
+                    estaciones = [s for s in estaciones if str(s.get('id')) not in ids_chaak]
+                    # 3. Inyectamos los datos en tiempo real
+                    estaciones.extend(chaak_data)
+                    print(f"✅ CHAAK inyectado con éxito: {len(chaak_data)} estación(es) de control al mando.")
+            except Exception as e:
+                print(f"⚠️ Error obteniendo CHAAK del Mirror API: {e}. Fallback a datos de S3.")
+                
             lluvia_activa = [s for s in estaciones if float(s['acumulado_actual']) > 0]
             
             # 1. Leemos el modelo previo de S3 para la derivada
@@ -743,7 +761,7 @@ def lambda_handler(event, context):
                 matriz_acumulada['metadata']['tipo'] = "ACUMULADO_24H"
                 
                 # ==========================================
-                # 🚨 FIX NINJA 2: SUMA POR COORDENADAS EXACTAS Y SENSORES
+                # 🚨 FIX NINJA 2: INTEGRAL DE TIEMPO (RIEMANN SUM)
                 # ==========================================
                 dict_acumulado = {}
                 dict_estaciones = {} # 🚨 Memoria para las estaciones crudas
@@ -757,32 +775,48 @@ def lambda_handler(event, context):
                     llave = f"{celda['lat']}_{celda['lon']}"
                     dict_acumulado[llave] = 0.0
 
-                # Sumamos iterando sobre la línea de tiempo de 24h
-                for registro in historial_24h:
+                # 1. Ordenamos cronológicamente para que la línea de tiempo fluya hacia adelante
+                historial_ordenado = sorted(historial_24h, key=lambda x: x['timestamp'])
+
+                # 2. Sumamos usando una Integral (Intensidad * Delta de Tiempo en Horas)
+                for i, registro in enumerate(historial_ordenado):
                     
-                    # A. Sumamos las celdas RBF
+                    # Cálculo del Delta T (en horas)
+                    if i == 0:
+                        delta_horas = 1.0 / 60.0  # Asumimos 1 minuto conservador para el primer fotograma
+                    else:
+                        t_actual = datetime.datetime.fromisoformat(registro['timestamp'])
+                        t_previo = datetime.datetime.fromisoformat(historial_ordenado[i-1]['timestamp'])
+                        delta_horas = (t_actual - t_previo).total_seconds() / 3600.0
+                        
+                        # Blindaje: Si la Lambda estuvo apagada (ej. gap de 3 horas), 
+                        # no queremos multiplicar la intensidad por 3 y crear un pico falso. 
+                        # Topamos el delta a 30 minutos (0.5 horas) máximo.
+                        if delta_horas > 0.5: 
+                            delta_horas = 0.5
+                            
+                    # A. Integramos las celdas RBF
                     for celda in registro['values']:
                         llave = f"{celda['lat']}_{celda['lon']}"
                         if llave in dict_acumulado:
-                            dict_acumulado[llave] += float(celda.get('rain_mm_h', 0.0))
+                            dict_acumulado[llave] += float(celda.get('rain_mm_h', 0.0)) * delta_horas
                             
-                    # B. 🚨 NUEVO: Sumamos el registro crudo de las estaciones
+                    # B. Integramos el registro crudo de las estaciones (Ground Truth)
                     for st in registro.get('stations', []):
                         st_id = st['id']
                         if st_id not in dict_estaciones:
-                            # La agregamos dinámicamente si no existía
                             dict_estaciones[st_id] = {
                                 "id": st_id, "nombre": st["nombre"],
                                 "lat": st["lat"], "lon": st["lon"], "rain_mm_h": 0.0
                             }
-                        dict_estaciones[st_id]['rain_mm_h'] += float(st.get('rain_mm_h', 0.0))
+                        dict_estaciones[st_id]['rain_mm_h'] += float(st.get('rain_mm_h', 0.0)) * delta_horas
 
-                # Reinyectamos los valores al array final de la malla
+                # 3. Reinyectamos los valores integrados al array final de la malla
                 for celda in matriz_acumulada['values']:
                     llave = f"{celda['lat']}_{celda['lon']}"
                     celda['rain_mm_h'] = round(dict_acumulado[llave], 2)
                     
-                # 🚨 NUEVO: Inyectamos el catálogo de estaciones acumuladas al JSON final
+                # 4. Inyectamos el catálogo de estaciones acumuladas al JSON final
                 for st in dict_estaciones.values():
                     st['rain_mm_h'] = round(st['rain_mm_h'], 2)
                 matriz_acumulada['stations'] = list(dict_estaciones.values())
