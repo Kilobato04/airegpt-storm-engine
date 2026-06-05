@@ -12,7 +12,7 @@ s3_client = boto3.client('s3')
 def get_intensidad(mm):
     if mm == 0: return "Sin lluvia"
     if mm <= 3.0: return "Ligera"
-    if mm <= 7.0: return "Moderada"
+    if mm <= 7.0: return "Regular" 
     if mm <= 13.0: return "Fuerte"
     if mm <= 20.0: return "Intensa"
     return "Torrencial"
@@ -98,6 +98,13 @@ def lambda_handler(event, context):
         mm_actual = celda_cercana.get('rain_mm_h', 0.0)
         alerta = celda_cercana.get('alert_status', 'NORMAL')
         
+        # 🚨 FIX: Mensajes cortos diferenciados (UX Híbrida: Actual + Predictivo)
+        if alerta == "AMARILLA": msg_corto = "Lluvia regular detectada en tu cuadrante."
+        elif alerta == "NARANJA": msg_corto = "Lluvia fuerte detectada. Sugerimos tomar precauciones viales."
+        elif alerta == "ROJA": msg_corto = "⚠️ Pico de tormenta intensa proyectado en los próximos 15 min."
+        elif alerta == "PURPURA": msg_corto = "🚨 EMERGENCIA: Pico de tormenta torrencial proyectado en los próximos 15 min."
+        else: msg_corto = "Cielo despejado." if mm_actual == 0 else "Lluvia detectada."
+        
         # Riesgo Histórico (Opcional)
         riesgo_obj = None
         if 'riesgo_historico' in celda_cercana:
@@ -120,7 +127,7 @@ def lambda_handler(event, context):
                 "mm_h": mm_actual,
                 "intensidad": get_intensidad(mm_actual),
                 "alerta_predictiva": alerta,
-                "mensaje_corto": "Lluvia crítica inminente." if alerta == "CRITICA" else "Cielo despejado." if mm_actual == 0 else "Lluvia detectada."
+                "mensaje_corto": msg_corto # 🚀 El mensaje híbrido se inyecta aquí
             },
             "movilidad_ecobici": movilidad_obj,
             "riesgo_historico": riesgo_obj,
