@@ -506,17 +506,27 @@ def lambda_handler(event, context):
                     # 🔮 PROYECCIÓN A 15 MINUTOS (La magia predictiva)
                     lluvia_proyectada_15m = lluvia_actual + (derivada_local * 15.0)
                     
-                    # 🚨 ALERTA BINARIA (Punto de No Retorno >= 13.1 mm/h)
+                    # 🚨 FIX: UMBRALES MULTI-RIESGO SGIRPC / SACMEX
                     alerta_celda = "NORMAL"
-                    if lluvia_proyectada_15m >= 13.1: 
-                        alerta_celda = "CRITICA" 
+                    if lluvia_proyectada_15m >= 70.0: 
+                        alerta_celda = "PURPURA"
+                    elif lluvia_proyectada_15m >= 50.0:
+                        alerta_celda = "ROJA"
+                    elif lluvia_proyectada_15m >= 30.0:
+                        alerta_celda = "NARANJA"
+                    elif lluvia_proyectada_15m >= 15.0:
+                        alerta_celda = "AMARILLA"
 
                     # Determinamos el nivel de riesgo estético para los colores del Frontend
-                    if alerta_celda == "CRITICA":
+                    if alerta_celda in ["ROJA", "PURPURA"]:
                         nivel_riesgo = "Crítico"
+                    elif alerta_celda == "NARANJA":
+                        nivel_riesgo = "Alto"
+                    elif alerta_celda == "AMARILLA":
+                        nivel_riesgo = "Moderado"
                     elif lluvia_actual >= 7.1:
                         nivel_riesgo = "Alto"
-                    elif lluvia_actual >= 3.1:
+                    elif lluvia_actual >= 3.1: # Adaptado al nuevo "Regular"
                         nivel_riesgo = "Moderado"
                     else:
                         nivel_riesgo = "Ligero"
