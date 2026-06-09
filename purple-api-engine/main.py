@@ -699,6 +699,18 @@ def lambda_handler(event, context):
                 )
 
                 print("✅ Modelado PRESENTE completado y subido a S3.")
+
+                try:
+                    # Usamos el cliente boto3 que ya tienes importado arriba
+                    lambda_client = boto3.client('lambda')
+                    lambda_client.invoke(
+                        FunctionName='Smability-Chatbot', # Asegúrate que este sea el nombre exacto de tu función
+                        InvocationType='Event', # Asíncrono: el modelo no se queda esperando al bot
+                        Payload=json.dumps({"action": "RUN_RAIN_SENTINEL"})
+                    )
+                    print("☔ Sentinel del Chatbot despertado con éxito.")
+                except Exception as e:
+                    print(f"⚠️ Error despertando al Chatbot: {e}")
                 
                 # ==========================================
                 # 🚨 FIX NINJA 1: COMPRESIÓN DEL HISTORIAL 
