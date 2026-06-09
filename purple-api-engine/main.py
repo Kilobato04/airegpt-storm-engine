@@ -780,6 +780,9 @@ def lambda_handler(event, context):
             if final_payload:
                 matriz_acumulada = final_payload.copy()
                 matriz_acumulada['timestamp'] = ahora.isoformat()
+                if 'metadata' not in matriz_acumulada:
+                    matriz_acumulada['metadata'] = {}
+                    
                 matriz_acumulada['metadata']['tipo'] = "ACUMULADO_24H"
                 
                 # ==========================================
