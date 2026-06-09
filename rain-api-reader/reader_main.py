@@ -47,22 +47,25 @@ def lambda_handler(event, context):
         ref_lat = round(celda_cercana['lat'], 5)
         ref_lon = round(celda_cercana['lon'], 5)
 
-        # 3. Procesar Ecobici (Top 3 por Disponibilidad con Ubicación Exacta)
+        # 3. Procesar Ecobici (Mínimo 3 bicis y orden por distancia real)
         movilidad_obj = None
         if 'movilidad' in celda_cercana:
-            # Ordenamos estaciones por cantidad de bicis (Descendente)
-            estaciones = sorted(celda_cercana['movilidad'].get('ecobicis_en_celda', []), 
-                                key=lambda x: x.get('disponibles', 0), reverse=True)
-            if estaciones:
+            # 1. Filtramos: Mínimo 3 bicis para evitar unidades rotas o apartadas
+            est_validas = [s for s in celda_cercana['movilidad'].get('ecobicis_en_celda', []) if s.get('disponibles', 0) >= 3]
+            
+            # 2. Ordenamos por DISTANCIA REAL al GPS del usuario (usando math.hypot)
+            estaciones_ordenadas = sorted(est_validas, key=lambda s: math.hypot(s['lat'] - user_lat, s['lon'] - user_lon))
+            
+            if estaciones_ordenadas:
                 movilidad_obj = {
-                    "estaciones_en_celda": len(estaciones),
-                    "total_bicicletas": sum(s.get('disponibles', 0) for s in estaciones),
+                    "estaciones_en_celda": len(est_validas),
+                    "total_bicicletas": sum(s.get('disponibles', 0) for s in est_validas),
                     "mejores_opciones": [{
                         "nombre": s['nombre'],
                         "disponibles": s['disponibles'],
                         "lat": s['lat'],
                         "lon": s['lon']
-                    } for s in estaciones[:3]]
+                    } for s in estaciones_ordenadas[:3]]
                 }
 
         # 4. EXTRAER VECTOR DE PRONÓSTICO (6 Horas Futuras)
@@ -98,12 +101,17 @@ def lambda_handler(event, context):
         mm_actual = celda_cercana.get('rain_mm_h', 0.0)
         alerta = celda_cercana.get('alert_status', 'NORMAL')
         
-        # 🚨 FIX: Mensajes cortos diferenciados (UX Híbrida: Actual + Predictivo)
-        if alerta == "AMARILLA": msg_corto = "Lluvia regular detectada en tu cuadrante."
-        elif alerta == "NARANJA": msg_corto = "Lluvia fuerte detectada. Sugerimos tomar precauciones viales."
-        elif alerta == "ROJA": msg_corto = "⚠️ Pico de tormenta intensa proyectado en los próximos 15 min."
-        elif alerta == "PURPURA": msg_corto = "🚨 EMERGENCIA: Pico de tormenta torrencial proyectado en los próximos 15 min."
-        else: msg_corto = "Cielo despejado." if mm_actual == 0 else "Lluvia detectada."
+        # 🚨 FIX: Mensajes cortos probabilísticos y neutrales (UX Híbrida)
+        if alerta == "AMARILLA": 
+            msg_corto = "Alta probabilidad de lluvia regular sostenida en tu zona."
+        elif alerta == "NARANJA": 
+            msg_corto = "Alta probabilidad de alcanzar nivel Naranja (lluvia fuerte) en los próximos 10-15 min."
+        elif alerta == "ROJA": 
+            msg_corto = "⚠️ Alta probabilidad de alerta Roja (tormenta severa) en los próximos 10-15 min."
+        elif alerta == "PURPURA": 
+            msg_corto = "🚨 Alta probabilidad de alerta Púrpura (tormenta extrema) en los próximos 10-15 min."
+        else: 
+            msg_corto = "Cielo despejado." if mm_actual == 0 else "Lluvia ligera detectada."
         
         # Riesgo Histórico (Opcional)
         riesgo_obj = None
