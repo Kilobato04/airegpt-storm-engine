@@ -22,6 +22,28 @@ GEOJSON_PATH = '/var/task/zmvm_malla_consolidada.geojson'
 UMBRAL_NARANJA = 0.5
 UMBRAL_PURPURA = 1.0
 
+# ==========================================
+# 🚀 UMBRALES DE EXPLOSIVIDAD CONVECTIVA (P90)
+# ==========================================
+UMBRALES_EXPLOSIVIDAD = {
+    "CE": 2.50, "CW": 2.72,
+    "NE": 1.56, "NW": 2.72,
+    "SE": 2.72, "SW": 1.92
+}
+
+def obtener_cuadrante(lat, lon):
+    """Clasificador ultrarrápido O(1) de cuadrantes basado en límites de app.js"""
+    # Límite Medio Longitud: -99.075 (Divide Poniente y Oriente)
+    is_west = lon < -99.075 
+    
+    # Límites Latitud: 19.55 (Corte Norte/Centro), 19.25 (Corte Centro/Sur)
+    if lat >= 19.55:
+        return "NW" if is_west else "NE"
+    elif lat >= 19.25:
+        return "CW" if is_west else "CE"
+    else:
+        return "SW" if is_west else "SE"
+
 s3_client = boto3.client('s3')
 
 # ==========================================
@@ -495,13 +517,25 @@ def lambda_handler(event, context):
                     # Extraer lluvia de hace ~3 min en esta misma coordenada exacta
                     lluvia_previa = dict_previo.get(f"{lat_c}_{lon_c}", 0.0)
                     
-                    # Cálculo de la derivada local (mm/min)
+                    # Cálculo de la derivada local (mm/min) -> Físicamente es la Aceleración
                     delta_rain_local = lluvia_actual - lluvia_previa
                     derivada_local = 0.0
+                    is_explosive = False # 🚨 NUEVO: Bandera del Shadow Mode
                     
                     # Evitamos divisiones por cero o crecimientos negativos
                     if delta_time_min > 0 and delta_rain_local > 0:
                         derivada_local = delta_rain_local / delta_time_min
+                        
+                        # ==========================================
+                        # 🚀 SHADOW MODE: EVALUACIÓN DE EXPLOSIVIDAD
+                        # ==========================================
+                        if derivada_local > 0.5: # Filtro previo para no checar lloviznas y ahorrar CPU
+                            cuadrante = obtener_cuadrante(lat_c, lon_c)
+                            umbral_zona = UMBRALES_EXPLOSIVIDAD.get(cuadrante, 2.72) # 2.72 por defecto
+                            
+                            if derivada_local >= umbral_zona:
+                                is_explosive = True
+                                print(f"[SHADOW_MODE_TRIGGER] 🚀 ¡Explosión en {cuadrante}! Lat: {lat_c}, Lon: {lon_c} | Accel: {derivada_local:.2f} >= Umbral: {umbral_zona}")
                     
                     # 🔮 PROYECCIÓN A 15 MINUTOS (La magia predictiva)
                     lluvia_proyectada_15m = lluvia_actual + (derivada_local * 15.0)
@@ -526,7 +560,7 @@ def lambda_handler(event, context):
                         nivel_riesgo = "Moderado"
                     elif lluvia_actual >= 7.1:
                         nivel_riesgo = "Alto"
-                    elif lluvia_actual >= 3.1: # Adaptado al nuevo "Regular"
+                    elif lluvia_actual >= 3.1: 
                         nivel_riesgo = "Moderado"
                     else:
                         nivel_riesgo = "Ligero"
@@ -538,6 +572,7 @@ def lambda_handler(event, context):
                         "edo": str(row.get('estado', 'CDMX')),
                         "rain_mm_h": round(lluvia_actual, 2),
                         "derivative_mm_min": round(derivada_local, 3), 
+                        "is_explosive": is_explosive, # 🚨 NUEVO: Inyectamos el flag matemático
                         "risk": nivel_riesgo,
                         "alert_status": alerta_celda,
                         "station": None,
