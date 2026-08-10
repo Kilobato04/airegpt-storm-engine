@@ -824,57 +824,53 @@ def lambda_handler(event, context):
                 # 🚨 FIX NINJA 2: INTEGRAL DE TIEMPO (RIEMANN SUM)
                 # ==========================================
                 dict_acumulado = {}
-                dict_estaciones = {} # 🚨 Memoria para las estaciones crudas
+                dict_estaciones = {} 
                 
-                # Inicializamos todo en 0.0 usando 'lat_lon' como llave maestra
-                for celda in matriz_acumulada['values']:
-                    celda['rain_mm_h'] = 0.0
-                    celda['derivative_mm_min'] = 0.0
-                    celda.pop('riesgo_historico', None)
-                    celda.pop('movilidad', None)
-                    llave = f"{celda['lat']}_{celda['lon']}"
-                    dict_acumulado[llave] = 0.0
-
                 # 1. Ordenamos cronológicamente para que la línea de tiempo fluya hacia adelante
                 historial_ordenado = sorted(historial_24h, key=lambda x: x['timestamp'])
 
-                # 2. Sumamos usando una Integral (Intensidad * Delta de Tiempo en Horas)
+                # 2. Sumamos dinámicamente usando una Integral de Riemann
                 for i, registro in enumerate(historial_ordenado):
                     
                     # Cálculo del Delta T (en horas)
                     if i == 0:
-                        delta_horas = 1.0 / 60.0  # Asumimos 1 minuto conservador para el primer fotograma
+                        delta_horas = 5.0 / 60.0  # Asumimos 5 min para el primer frame
                     else:
                         t_actual = datetime.datetime.fromisoformat(registro['timestamp'])
                         t_previo = datetime.datetime.fromisoformat(historial_ordenado[i-1]['timestamp'])
                         delta_horas = (t_actual - t_previo).total_seconds() / 3600.0
                         
-                        # Blindaje: Si la Lambda estuvo apagada (ej. gap de 3 horas), 
-                        # no queremos multiplicar la intensidad por 3 y crear un pico falso. 
-                        # Topamos el delta a 30 minutos (0.5 horas) máximo.
+                        # Blindaje contra apagones de Lambda
                         if delta_horas > 0.5: 
-                            delta_horas = 0.5
+                            delta_horas = 0.5 
                             
-                    # A. Integramos las celdas RBF
+                    # A. Integramos las celdas RBF creando llaves al vuelo
                     for celda in registro['values']:
                         llave = f"{celda['lat']}_{celda['lon']}"
-                        if llave in dict_acumulado:
-                            dict_acumulado[llave] += float(celda.get('rain_mm_h', 0.0)) * delta_horas
+                        if llave not in dict_acumulado:
+                            dict_acumulado[llave] = {'lat': celda['lat'], 'lon': celda['lon'], 'rain_mm_h': 0.0}
                             
-                    # B. Integramos el registro crudo de las estaciones (Ground Truth)
+                        dict_acumulado[llave]['rain_mm_h'] += float(celda.get('rain_mm_h', 0.0)) * delta_horas
+                            
+                    # B. Integramos estaciones físicas (Ground Truth)
                     for st in registro.get('stations', []):
-                        st_id = st['id']
+                        st_id = str(st['id'])
                         if st_id not in dict_estaciones:
                             dict_estaciones[st_id] = {
-                                "id": st_id, "nombre": st["nombre"],
+                                "id": st_id, "nombre": st.get("nombre", f"Estación {st_id}"),
                                 "lat": st["lat"], "lon": st["lon"], "rain_mm_h": 0.0
                             }
                         dict_estaciones[st_id]['rain_mm_h'] += float(st.get('rain_mm_h', 0.0)) * delta_horas
 
-                # 3. Reinyectamos los valores integrados al array final de la malla
-                for celda in matriz_acumulada['values']:
-                    llave = f"{celda['lat']}_{celda['lon']}"
-                    celda['rain_mm_h'] = round(dict_acumulado[llave], 2)
+                # 3. Reconstruimos el array final de la malla solo con valores > 0
+                matriz_acumulada['values'] = [
+                    {
+                        "lat": v['lat'], 
+                        "lon": v['lon'], 
+                        "rain_mm_h": round(v['rain_mm_h'], 2)
+                    } 
+                    for v in dict_acumulado.values() if v['rain_mm_h'] > 0
+                ]
                     
                 # 4. Inyectamos el catálogo de estaciones acumuladas al JSON final
                 for st in dict_estaciones.values():
