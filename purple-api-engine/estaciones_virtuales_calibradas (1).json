@@ -1,0 +1,92 @@
+{
+    "VIRT_070": {
+        "lat": 19.390924,
+        "lon": -99.262071,
+        "tipo": "VIRTUAL",
+        "radio_separacion_km": 4.87
+    },
+    "VIRT_040": {
+        "lat": 19.245071,
+        "lon": -99.164461,
+        "tipo": "VIRTUAL",
+        "radio_separacion_km": 5.54
+    },
+    "VIRT_097": {
+        "lat": 19.280115,
+        "lon": -99.194532,
+        "tipo": "VIRTUAL",
+        "radio_separacion_km": 4.29
+    },
+    "VIRT_102": {
+        "lat": 19.316158,
+        "lon": -99.283203,
+        "tipo": "VIRTUAL",
+        "radio_separacion_km": 4.22
+    },
+    "VIRT_012": {
+        "lat": 19.277291,
+        "lon": -99.285157,
+        "tipo": "VIRTUAL",
+        "radio_separacion_km": 7.49
+    },
+    "VIRT_106": {
+        "lat": 19.306704,
+        "lon": -99.141086,
+        "tipo": "VIRTUAL",
+        "radio_separacion_km": 4.15
+    },
+    "VIRT_061": {
+        "lat": 19.343439,
+        "lon": -99.253465,
+        "tipo": "VIRTUAL",
+        "radio_separacion_km": 5.11
+    },
+    "VIRT_110": {
+        "lat": 19.286203,
+        "lon": -99.246332,
+        "tipo": "VIRTUAL",
+        "radio_separacion_km": 4.1
+    },
+    "VIRT_019": {
+        "lat": 19.41435,
+        "lon": -99.305507,
+        "tipo": "VIRTUAL",
+        "radio_separacion_km": 6.64
+    },
+    "VIRT_041": {
+        "lat": 19.206379,
+        "lon": -99.203736,
+        "tipo": "VIRTUAL",
+        "radio_separacion_km": 5.51
+    },
+    "VIRT_082": {
+        "lat": 19.212915,
+        "lon": -99.141942,
+        "tipo": "VIRTUAL",
+        "radio_separacion_km": 4.58
+    },
+    "VIRT_051": {
+        "lat": 19.189295,
+        "lon": -98.999016,
+        "tipo": "VIRTUAL",
+        "radio_separacion_km": 5.37
+    },
+    "VIRT_100": {
+        "lat": 19.367071,
+        "lon": -99.039774,
+        "tipo": "VIRTUAL",
+        "radio_separacion_km": 4.23
+    },
+    "VIRT_095": {
+        "lat": 19.388095,
+        "lon": -99.085806,
+        "tipo": "VIRTUAL",
+        "radio_separacion_km": 4.29
+    },
+    "VIRT_038": {
+        "lat": 19.273688,
+        "lon": -99.097403,
+        "tipo": "VIRTUAL",
+        "radio_separacion_km": 5.62
+    }
+}
