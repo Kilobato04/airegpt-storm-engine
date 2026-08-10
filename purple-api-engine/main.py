@@ -579,7 +579,9 @@ def lambda_handler(event, context):
                         "source": "Modelo Espacial (RBF)"
                     })
 
+                # ==========================================
                 # 6. Planchamos TODAS las estaciones sobre la malla (llueva o no)
+                # ==========================================
                 for s in estaciones:
                     try:
                         s_lat = float(s['latitud'])
@@ -590,6 +592,9 @@ def lambda_handler(event, context):
                         nombre_est = str(s.get('nombre', ''))
                         id_est = str(s.get('id', ''))
                         
+                        # --------------------------------------------------
+                        # 🚨 FIX 1: NOMENCLATURA DE ORIGEN (SOURCE CORRECTO)
+                        # --------------------------------------------------
                         nombre_lower = nombre_est.lower()
                         id_lower = id_est.lower()
                         
@@ -607,8 +612,20 @@ def lambda_handler(event, context):
 
                         if s_rain > 0:
                             output_cells[closest_idx]["rain_mm_h"] = float(s_rain)
-                            output_cells[closest_idx]["risk"] = "Crítico" if alerta_status != "NORMAL" else "Moderado"
                             
+                            # --------------------------------------------------
+                            # 🚨 FIX 2: RIESGO LOCAL VS RIESGO GLOBAL
+                            # --------------------------------------------------
+                            if s_rain >= 7.1 or output_cells[closest_idx]["alert_status"] in ["ROJA", "PURPURA"]:
+                                output_cells[closest_idx]["risk"] = "Crítico"
+                            elif s_rain >= 3.1 or output_cells[closest_idx]["alert_status"] == "NARANJA":
+                                output_cells[closest_idx]["risk"] = "Alto"
+                            elif output_cells[closest_idx]["alert_status"] == "AMARILLA":
+                                output_cells[closest_idx]["risk"] = "Moderado"
+                            else:
+                                output_cells[closest_idx]["risk"] = "Ligero"
+                            
+                            # Solo la celda con el pico máximo se lleva la derivada global
                             if max_rain_actual > 0 and s_rain == max_rain_actual:
                                 output_cells[closest_idx]["derivative_mm_min"] = float(round(derivada, 2))
                                 output_cells[closest_idx]["alert_status"] = alerta_status
