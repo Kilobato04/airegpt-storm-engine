@@ -843,38 +843,44 @@ def lambda_handler(event, context):
                 matriz_acumulada['metadata']['tipo'] = "ACUMULADO_24H"
                 
                 # ==========================================
-                # 🚨 FIX NINJA 2: INTEGRAL DE TIEMPO (RIEMANN SUM)
+                # 🚨 FIX NINJA 2: INTEGRAL DE TIEMPO + MALLA COMPLETA
                 # ==========================================
+                
+                # 1. Construimos una malla COMPLETA en ceros 
+                malla_completa = []
+                for idx, row in grid.iterrows():
+                    malla_completa.append({
+                        "lat": round(row['lat'], 5),
+                        "lon": round(row['lon'], 5),
+                        "col": str(row.get('colonia', 'Sin Colonia')),
+                        "mun": str(row.get('municipio', 'CDMX/Edomex')),
+                        "edo": str(row.get('estado', 'CDMX')),
+                        "rain_mm_h": 0.0,
+                        "risk": "Ligero"
+                    })
+
                 dict_acumulado = {}
                 dict_estaciones = {} 
                 
-                # 1. Ordenamos cronológicamente para que la línea de tiempo fluya hacia adelante
+                # 2. Ordenamos cronológicamente
                 historial_ordenado = sorted(historial_24h, key=lambda x: x['timestamp'])
 
-                # 2. Sumamos dinámicamente usando una Integral de Riemann
+                # 3. Sumamos dinámicamente (Riemann)
                 for i, registro in enumerate(historial_ordenado):
-                    
-                    # Cálculo del Delta T (en horas)
                     if i == 0:
-                        delta_horas = 5.0 / 60.0  # Asumimos 5 min para el primer frame
+                        delta_horas = 5.0 / 60.0  
                     else:
                         t_actual = datetime.datetime.fromisoformat(registro['timestamp'])
                         t_previo = datetime.datetime.fromisoformat(historial_ordenado[i-1]['timestamp'])
                         delta_horas = (t_actual - t_previo).total_seconds() / 3600.0
-                        
-                        # Blindaje contra apagones de Lambda
-                        if delta_horas > 0.5: 
-                            delta_horas = 0.5 
+                        if delta_horas > 0.5: delta_horas = 0.5 
                             
-                    # A. Integramos las celdas RBF creando llaves al vuelo
+                    # A. Integramos celdas
                     for celda in registro['values']:
                         llave = f"{celda['lat']}_{celda['lon']}"
-                        if llave not in dict_acumulado:
-                            dict_acumulado[llave] = {'lat': celda['lat'], 'lon': celda['lon'], 'rain_mm_h': 0.0}
+                        dict_acumulado[llave] = dict_acumulado.get(llave, 0.0) + (float(celda.get('rain_mm_h', 0.0)) * delta_horas)
                             
-                        dict_acumulado[llave]['rain_mm_h'] += float(celda.get('rain_mm_h', 0.0)) * delta_horas
-                            
-                    # B. Integramos estaciones físicas (Ground Truth)
+                    # B. Integramos estaciones físicas
                     for st in registro.get('stations', []):
                         st_id = str(st['id'])
                         if st_id not in dict_estaciones:
@@ -884,20 +890,41 @@ def lambda_handler(event, context):
                             }
                         dict_estaciones[st_id]['rain_mm_h'] += float(st.get('rain_mm_h', 0.0)) * delta_horas
 
-                # 3. Reconstruimos el array final de la malla solo con valores > 0
-                matriz_acumulada['values'] = [
-                    {
-                        "lat": v['lat'], 
-                        "lon": v['lon'], 
-                        "rain_mm_h": round(v['rain_mm_h'], 2)
-                    } 
-                    for v in dict_acumulado.values() if v['rain_mm_h'] > 0
-                ]
+                # 4. Planchamos las sumas sobre la malla COMPLETA
+                for celda in malla_completa:
+                    llave = f"{celda['lat']}_{celda['lon']}"
+                    acumulado = round(dict_acumulado.get(llave, 0.0), 2)
+                    celda['rain_mm_h'] = acumulado
                     
-                # 4. Inyectamos el catálogo de estaciones acumuladas al JSON final
+                    if acumulado >= 50.0: celda['risk'] = "Crítico"
+                    elif acumulado >= 20.0: celda['risk'] = "Alto"
+                    elif acumulado >= 5.0: celda['risk'] = "Moderado"
+                    else: celda['risk'] = "Ligero"
+
                 for st in dict_estaciones.values():
                     st['rain_mm_h'] = round(st['rain_mm_h'], 2)
-                matriz_acumulada['stations'] = list(dict_estaciones.values())
+
+                # 5. Guardamos
+                matriz_acumulada = {
+                    "timestamp": ahora.isoformat(),
+                    "metadata": {
+                        "alerta_global": "NORMAL",
+                        "pico_lluvia_max": 0.0, 
+                        "ubicacion_pico": "N/A",
+                        "unidades": "mm",
+                        "horizonte_prediccion": "15min",
+                        "tipo": "ACUMULADO_24H"
+                    },
+                    "values": malla_completa, # <--- ENVIAMOS LA MALLA GORDA COMPLETA
+                    "stations": list(dict_estaciones.values())
+                }
+                
+                # Actualizamos metadata con la celda peor (para debug)
+                celdas_con_lluvia = [c for c in malla_completa if c['rain_mm_h'] > 0]
+                if celdas_con_lluvia:
+                    peor_celda = max(celdas_con_lluvia, key=lambda x: x['rain_mm_h'])
+                    matriz_acumulada['metadata']['pico_lluvia_max'] = peor_celda['rain_mm_h']
+                    matriz_acumulada['metadata']['ubicacion_pico'] = f"{peor_celda['col']}, {peor_celda['mun']}"
 
                 s3_client.put_object(
                     Bucket=S3_BUCKET, Key=S3_KEY_ACCUMULATED,
