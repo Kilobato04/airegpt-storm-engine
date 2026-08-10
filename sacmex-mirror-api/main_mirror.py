@@ -202,6 +202,10 @@ class EarlyWarningSacmexAPI:
                     self.log(f"⚠️ Error menor consultando CHAAK: {e}")
 
             if fresh_data and len(fresh_data) > 0:
+                
+                # 🚨 INYECTAMOS VIRTUALES ANTES DE CHECAR CAMBIOS 🚨
+                fresh_data = self.inyectar_estaciones_virtuales(fresh_data)
+                
                 has_changed = self.detect_data_changes(fresh_data)
                 
                 self.cache['data'] = fresh_data
@@ -406,6 +410,86 @@ class EarlyWarningSacmexAPI:
             self.cache['redConfianzaPromedio'] = round(avg_conf, 2)
             
         return sorted(processed, key=lambda x: x['acumulado_actual'], reverse=True)
+
+    def inyectar_estaciones_virtuales(self, estaciones_reales):
+        import math
+        
+        # 1. Nuestro catálogo calibrado
+        virtuales = {
+          "VIRT_070": {"lat": 19.429983, "lon": -99.213322},
+          "VIRT_040": {"lat": 19.265147, "lon": -99.161803},
+          "VIRT_097": {"lat": 19.306353, "lon": -99.192716},
+          "VIRT_102": {"lat": 19.357872, "lon": -99.264835},
+          "VIRT_012": {"lat": 19.306353, "lon": -99.264835},
+          "VIRT_106": {"lat": 19.316656, "lon": -99.130889},
+          "VIRT_061": {"lat": 19.378477, "lon": -99.233929},
+          "VIRT_110": {"lat": 19.275444, "lon": -99.233929},
+          "VIRT_019": {"lat": 19.450589, "lon": -99.264835},
+          "VIRT_041": {"lat": 19.162118, "lon": -99.161803}
+        }
+
+        # 2. Filtramos solo físicas con buena salud para evitar retroalimentación
+        fisicas_validas = [
+            st for st in estaciones_reales 
+            if st.get('auditoria', {}).get('confianza_index', 1.0) > 0.0
+        ]
+        
+        if not fisicas_validas:
+            return estaciones_reales
+            
+        ahora_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        
+        # 3. Calculamos IDW por cada nodo virtual
+        for v_id, coords in virtuales.items():
+            distancias = []
+            
+            # Medir distancia contra todas las físicas
+            for st in fisicas_validas:
+                d_lat = coords['lat'] - float(st['latitud'])
+                d_lon = coords['lon'] - float(st['longitud'])
+                dist_km = math.sqrt(d_lat**2 + d_lon**2) * 111.3
+                
+                # Evitar división por cero
+                distancias.append({
+                    'val': float(st.get('acumulado_actual', 0.0)),
+                    'dist': max(dist_km, 0.1) 
+                })
+            
+            # Tomar los 4 vecinos más cercanos (k=4)
+            vecinos = sorted(distancias, key=lambda x: x['dist'])[:4]
+            
+            # Matemática IDW (Python puro)
+            sum_pesos = 0.0
+            sum_valores = 0.0
+            for vec in vecinos:
+                peso = 1.0 / (vec['dist'] ** 2)
+                sum_pesos += peso
+                sum_valores += vec['val'] * peso
+                
+            val_idw = sum_valores / sum_pesos if sum_pesos > 0 else 0.0
+            
+            # 4. Empaquetar como estación oficial
+            estaciones_reales.append({
+                "id": v_id,
+                "nombre": f"NODO {v_id}",
+                "latitud": coords['lat'],
+                "longitud": coords['lon'],
+                "alcaldia": "RED_VIRTUAL",
+                "acumulado_actual": round(val_idw, 2),
+                "acumulado_desde_6am": round(val_idw, 2), 
+                "precipitacion_horaria": 0.0,
+                "intensidad": self.calculate_intensity(val_idw),
+                "auditoria": {
+                    "confianza_index": 1.0,
+                    "alertas": ["NODO_VIRTUAL_IDW"],
+                    "frescura_dato_segundos": 0
+                },
+                "ultima_actualizacion": ahora_iso,
+                "cache_timestamp_ISO": ahora_iso,
+                "origen": "MODELO_IDW"
+            })
+            
+        return estaciones_reales
 
     def fetch_chaak_station(self):
         base_data = {
