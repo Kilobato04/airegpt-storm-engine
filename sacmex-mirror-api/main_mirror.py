@@ -413,19 +413,19 @@ class EarlyWarningSacmexAPI:
 
     def inyectar_estaciones_virtuales(self, estaciones_reales):
         import math
-        
-        # 1. Nuestro catálogo calibrado
+
+        # 1. Nuestro catálogo calibrado definitivo (10 Nodos)
         virtuales = {
-          "VIRT_070": {"lat": 19.429983, "lon": -99.213322},
-          "VIRT_040": {"lat": 19.265147, "lon": -99.161803},
-          "VIRT_097": {"lat": 19.306353, "lon": -99.192716},
-          "VIRT_102": {"lat": 19.357872, "lon": -99.264835},
-          "VIRT_012": {"lat": 19.306353, "lon": -99.264835},
-          "VIRT_106": {"lat": 19.316656, "lon": -99.130889},
-          "VIRT_061": {"lat": 19.378477, "lon": -99.233929},
-          "VIRT_110": {"lat": 19.275444, "lon": -99.233929},
-          "VIRT_019": {"lat": 19.450589, "lon": -99.264835},
-          "VIRT_041": {"lat": 19.162118, "lon": -99.161803}
+            "VIRT_070": {"lat": 19.390924, "lon": -99.262071},
+            "VIRT_040": {"lat": 19.245071, "lon": -99.164461},
+            "VIRT_097": {"lat": 19.280115, "lon": -99.194532},
+            "VIRT_102": {"lat": 19.316158, "lon": -99.283203},
+            "VIRT_012": {"lat": 19.277291, "lon": -99.285157},
+            "VIRT_106": {"lat": 19.306704, "lon": -99.141086},
+            "VIRT_061": {"lat": 19.343439, "lon": -99.253465},
+            "VIRT_110": {"lat": 19.286203, "lon": -99.246332},
+            "VIRT_019": {"lat": 19.414350, "lon": -99.305507},
+            "VIRT_041": {"lat": 19.206379, "lon": -99.203736}
         }
 
         # 2. Filtramos solo físicas con buena salud para evitar retroalimentación
