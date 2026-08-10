@@ -590,8 +590,13 @@ def lambda_handler(event, context):
                         nombre_est = str(s.get('nombre', ''))
                         id_est = str(s.get('id', ''))
                         
-                        if 'chaak' in nombre_est.lower() or 'smability' in nombre_est.lower():
+                        nombre_lower = nombre_est.lower()
+                        id_lower = id_est.lower()
+                        
+                        if 'chaak' in nombre_lower or 'smability' in nombre_lower:
                             origen = "Sensor Activo (Red Smability)"
+                        elif 'nodo' in nombre_lower or 'virt' in id_lower:
+                            origen = "Ancla Virtual (Modelo IDW)"
                         else:
                             origen = "Sensor Activo (Red SACMEX)"
 
