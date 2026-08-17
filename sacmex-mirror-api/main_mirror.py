@@ -6,7 +6,11 @@ import datetime
 import requests
 import traceback
 import pytz
+import urllib3 # 🚨 FIX 1: Agregar esto
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# 🚨 FIX 1 (continuación): Silenciar los warnings de SSL
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- CONFIGURACIÓN ---
 CACHE_FILE = '/tmp/lluvia_cdmx_cache.json'
@@ -323,7 +327,7 @@ class EarlyWarningSacmexAPI:
                 timeout_val = 15 + (attempt - 1) * 2
                 self.log(f"📡 FETCH SACMEX ({attempt}/{self.maxRetries}) Timeout: {timeout_val}s")
                 
-                response = requests.get(self.baseURL + endpoint, headers=self.headers, timeout=timeout_val)
+                response = requests.get(self.baseURL + endpoint, headers=self.headers, timeout=timeout_val, verify=False)
                 response.raise_for_status()
                 data = response.json()
                 
@@ -517,7 +521,7 @@ class EarlyWarningSacmexAPI:
             
             def get_sensor_data(sensor_id):
                 try:
-                    res = requests.get(url_base + str(sensor_id), headers=headers, timeout=10)
+                    res = requests.get(url_base + str(sensor_id), headers=headers, timeout=10, verify=False)
                     time.sleep(0.5) # Respiro vital para el firewall IIS
                     raw = res.json() if res.status_code == 200 else []
                     
