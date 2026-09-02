@@ -193,9 +193,10 @@ class EarlyWarningSacmexAPI:
                 future_chaak = executor.submit(self.fetch_chaak_station)
                 
                 try:
-                    fresh_data = future_sacmex.result() # Lanza excepción si falla
+                    fresh_data = future_sacmex.result() 
                 except Exception as e:
-                    raise e
+                    self.log(f"🚨 SACMEX OFFLINE: {e}. Aislando falla. Operando en Degraded Mode.")
+                    fresh_data = [] # 🚨 Se inicializa vacío para no matar el proceso y salvar CHAAK
                     
                 try:
                     chaak_data = future_chaak.result()
