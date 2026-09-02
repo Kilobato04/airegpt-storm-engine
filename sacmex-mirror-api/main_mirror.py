@@ -350,7 +350,8 @@ class EarlyWarningSacmexAPI:
                     'url': target_url,
                     'country_code': 'mx',
                     'device_type': 'desktop',
-                    'keep_headers': 'true' # Forzamos a que preserve tus headers de autorización
+                    'keep_headers': 'true',
+                    'render': 'true' # Activamos el navegador headless real para superar posibles retos de seguridad
                 }
                 
                 # Pasamos las cabeceras de autorización de SACMEX
