@@ -349,7 +349,8 @@ class EarlyWarningSacmexAPI:
                     'api_key': 'a5fe39e65f1c3e32a2fb9efc2e2784be',
                     'url': target_url,
                     'country_code': 'mx',
-                    'render': 'false'
+                    'device_type': 'desktop',
+                    'keep_headers': 'true' # Forzamos a que preserve tus headers de autorización
                 }
                 
                 # Pasamos las cabeceras de autorización de SACMEX
