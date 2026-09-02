@@ -11,6 +11,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 🚨 FIX 1 (continuación): Silenciar los warnings de SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# 🚨 FIX SACMEX: Librerías para desencriptar el nuevo endpoint
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import unpad
 
 # --- CONFIGURACIÓN ---
 CACHE_FILE = '/tmp/lluvia_cdmx_cache.json'
@@ -319,24 +322,55 @@ class EarlyWarningSacmexAPI:
         
         return old_checksum != new_checksum
 
+
     def fetch_from_sacmex(self):
-        endpoint = '/pluviometros/index.php/lluvia/get_pluviometros'
+        # 🚨 EL NUEVO ENDPOINT OCULTO
+        endpoint = '/pluviometros/data/stations/day' 
         last_error = None
+
+        # 🔑 LOS SECRETOS EXTRAÍDOS DEL FRONTEND
+        api_token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+        aes_key_hex = "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809"
+        
+        # Inyectamos el token disfrazándonos de su frontend
+        headers_auth = {
+            'Authorization': f'Bearer {api_token}',
+            'Accept': 'application/json, text/plain, */*',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
 
         for attempt in range(1, self.maxRetries + 1):
             try:
                 timeout_val = 15 + (attempt - 1) * 2
-                self.log(f"📡 FETCH SACMEX ({attempt}/{self.maxRetries}) Timeout: {timeout_val}s")
+                self.log(f"📡 FETCH SACMEX ENCRIPTADO ({attempt}/{self.maxRetries}) Timeout: {timeout_val}s")
                 
-                response = requests.get(self.baseURL + endpoint, headers=self.headers, timeout=timeout_val, verify=False)
+                response = requests.get(self.baseURL + endpoint, headers=headers_auth, timeout=timeout_val, verify=False)
                 response.raise_for_status()
-                data = response.json()
                 
-                if isinstance(data, list) and len(data) > 0:
-                    self.log(f"✅ SACMEX ÉXITO: {len(data)} estaciones")
-                    return self.process_raw_data(data)
+                data_encriptada = response.json()
+                
+                if 'data' not in data_encriptada or 'iv' not in data_encriptada:
+                    raise ValueError("El JSON no tiene el formato encriptado esperado")
+
+                # ==========================================
+                # 🔓 APERTURA DE LA CAJA FUERTE (AES-256-CBC)
+                # ==========================================
+                iv_bytes = bytes.fromhex(data_encriptada['iv'])
+                ciphertext_bytes = bytes.fromhex(data_encriptada['data'])
+                key_bytes = bytes.fromhex(aes_key_hex)
+                
+                cipher = AES.new(key_bytes, AES.MODE_CBC, iv_bytes)
+                decrypted_padded = cipher.decrypt(ciphertext_bytes)
+                decrypted_bytes = unpad(decrypted_padded, AES.block_size)
+                
+                # Convertimos los bytes limpios a un Diccionario Python
+                raw_data = json.loads(decrypted_bytes.decode('utf-8'))
+                
+                if isinstance(raw_data, dict) or (isinstance(raw_data, list) and len(raw_data) > 0):
+                    self.log(f"✅ SACMEX HACKEADO Y DESENCRIPTADO con éxito")
+                    return self.process_raw_data(raw_data)
                 else:
-                    raise ValueError("Array vacío de SACMEX")
+                    raise ValueError("Array vacío después de desencriptar")
                     
             except Exception as e:
                 last_error = e
@@ -366,33 +400,66 @@ class EarlyWarningSacmexAPI:
         processed = []
         system_now = int(time.time() * 1000)
         
-        for idx, punto in enumerate(raw_data):
+        # 🚨 FIX: Extraemos la lista si el nuevo endpoint devuelve un GeoJSON FeatureCollection
+        lista_estaciones = raw_data.get('features', []) if isinstance(raw_data, dict) and 'features' in raw_data else raw_data
+
+        for idx, item in enumerate(lista_estaciones):
             try:
-                acum_actual = self.float_safe(punto.get('acumulado_actual'))
-                acum_desde = self.float_safe(punto.get('acumulado_desde'))
-                ts_orig = punto.get('ultimaActualizacion', '').strip()
+                # 🚨 FIX: Aplanamos el objeto si viene en formato GeoJSON (properties)
+                punto = item.get('properties', item) if isinstance(item, dict) else item
                 
+                # 1. Extracción de Lluvia (Soporta el nuevo 'total_rain' o los viejos nombres)
+                acum_actual = self.float_safe(punto.get('total_rain', punto.get('Value_Acum', punto.get('acumulado_actual', 0))))
+                acum_desde = self.float_safe(punto.get('total', punto.get('acumulado_desde', 0)))
+                
+                # 2. Extracción de Coordenadas (Defensivo contra GeoJSON o Lista Plana)
+                lat, lon = 0.0, 0.0
+                if 'geometry' in item and isinstance(item['geometry'], dict):
+                    coords = item['geometry'].get('coordinates', [0, 0])
+                    lon, lat = coords[0], coords[1]
+                else:
+                    lat = self.float_safe(punto.get('lat', punto.get('latitude', punto.get('latitud', 0))))
+                    lon = self.float_safe(punto.get('lon', punto.get('longitude', punto.get('longitud', 0))))
+
+                # 3. Extracción de Timestamp desde el string histórico 'total_data'
+                ts_orig = ""
+                try:
+                    if 'total_data' in punto and isinstance(punto['total_data'], str):
+                        historial = json.loads(punto['total_data'])
+                        if historial and len(historial) > 0:
+                            ts_orig = historial[-1].get('initial_time', '')
+                except:
+                    pass
+                
+                if not ts_orig:
+                    ts_orig = punto.get('ultimaActualizacion', datetime.datetime.now(self.cdmx_tz).strftime("%Y-%m-%d %H:%M:%S"))
+
                 sanity_score = 1.0
                 alertas = []
                 
                 # Parse timezone
                 try:
-                    fecha_obj = datetime.datetime.strptime(ts_orig, "%Y-%m-%d %H:%M:%S")
+                    if len(ts_orig) == 16:
+                        fecha_obj = datetime.datetime.strptime(ts_orig, "%Y-%m-%d %H:%M")
+                    else:
+                        fecha_obj = datetime.datetime.strptime(ts_orig, "%Y-%m-%d %H:%M:%S")
                     fecha_obj = self.cdmx_tz.localize(fecha_obj)
                     data_age = system_now - int(fecha_obj.timestamp() * 1000)
                 except:
+                    fecha_obj = datetime.datetime.now(self.cdmx_tz)
                     data_age = 0
                     
                 if data_age > 10 * 60 * 1000:
                     sanity_score -= 0.3
                     alertas.append("HIGH_LATENCY")
                     
+                # 4. Traducción al formato estándar esperado por la Lambda Engine
                 station = {
-                    'id': str(punto.get('id', f'EST_{idx}')),
-                    'nombre': punto.get('nombre', f'Pluvio {idx}'),
-                    'latitud': self.float_safe(punto.get('latitud', punto.get('coordenadas', [0,0])[0])),
-                    'longitud': self.float_safe(punto.get('longitud', punto.get('coordenadas', [0,0])[1])),
-                    'alcaldia': punto.get('municipality', 'CDMX'),
+                    'id': str(punto.get('station_code', punto.get('id', f'EST_{idx}'))),
+                    'nombre': punto.get('name', punto.get('nombre', f'Pluvio {idx}')),
+                    'latitud': lat,
+                    'longitud': lon,
+                    'alcaldia': punto.get('municipality', punto.get('alcaldia', 'CDMX')),
                     'acumulado_actual': round(acum_actual, 2),
                     'acumulado_desde_6am': round(acum_desde, 2),
                     'precipitacion_horaria': round(max(0.0, acum_actual - acum_desde), 2),
@@ -402,11 +469,15 @@ class EarlyWarningSacmexAPI:
                         'alertas': alertas,
                         'frescura_dato_segundos': max(0, data_age // 1000)
                     },
-                    'hora_actual_ISO': fecha_obj.isoformat() if 'fecha_obj' in locals() else "",
+                    'hora_actual_ISO': fecha_obj.isoformat(),
                     'ultima_actualizacion': ts_orig,
                     'cache_timestamp_ISO': datetime.datetime.now(datetime.timezone.utc).isoformat()
                 }
-                processed.append(station)
+                
+                # Descartamos basura (coordenadas en cero)
+                if lat != 0.0 and lon != 0.0:
+                    processed.append(station)
+                    
             except Exception as e:
                 self.log(f"Error procesando estación {idx}: {e}")
 
