@@ -322,17 +322,13 @@ class EarlyWarningSacmexAPI:
         
         return old_checksum != new_checksum
 
-
     def fetch_from_sacmex(self):
-        # 🚨 EL NUEVO ENDPOINT OCULTO
         endpoint = '/pluviometros/data/stations/day' 
         last_error = None
 
-        # 🔑 LOS SECRETOS EXTRAÍDOS DEL FRONTEND
         api_token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
         aes_key_hex = "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809"
         
-        # Inyectamos el token disfrazándonos de su frontend
         headers_auth = {
             'Authorization': f'Bearer {api_token}',
             'Accept': 'application/json, text/plain, */*',
@@ -341,20 +337,31 @@ class EarlyWarningSacmexAPI:
 
         for attempt in range(1, self.maxRetries + 1):
             try:
-                timeout_val = 15 + (attempt - 1) * 2
-                self.log(f"📡 FETCH SACMEX ENCRIPTADO ({attempt}/{self.maxRetries}) Timeout: {timeout_val}s")
+                timeout_val = 25 + (attempt - 1) * 5 # Damos más margen por el proxy
+                self.log(f"📡 FETCH SACMEX RESIDENCIAL ({attempt}/{self.maxRetries})")
                 
-                response = requests.get(self.baseURL + endpoint, headers=headers_auth, timeout=timeout_val, verify=False)
+                # 🛡️ URL Original de SACMEX que queremos alcanzar a través del Proxy
+                target_url = self.baseURL + endpoint
+                
+                # 🌐 Enrutamos a través de ScraperAPI con IP de México y modo residencial
+                proxy_api_url = "https://api.scraperapi.com"
+                payload = {
+                    'api_key': 'a5fe39e65f1c3e32a2fb9efc2e2784be',
+                    'url': target_url,
+                    'country_code': 'mx',
+                    'render': 'false'
+                }
+                
+                # Pasamos las cabeceras de autorización de SACMEX
+                response = requests.get(proxy_api_url, params=payload, headers=headers_auth, timeout=timeout_val, verify=False)
                 response.raise_for_status()
                 
                 data_encriptada = response.json()
                 
                 if 'data' not in data_encriptada or 'iv' not in data_encriptada:
-                    raise ValueError("El JSON no tiene el formato encriptado esperado")
+                    raise ValueError("El JSON no tiene el formato encriptado esperado a través del proxy")
 
-                # ==========================================
                 # 🔓 APERTURA DE LA CAJA FUERTE (AES-256-CBC)
-                # ==========================================
                 iv_bytes = bytes.fromhex(data_encriptada['iv'])
                 ciphertext_bytes = bytes.fromhex(data_encriptada['data'])
                 key_bytes = bytes.fromhex(aes_key_hex)
@@ -363,11 +370,10 @@ class EarlyWarningSacmexAPI:
                 decrypted_padded = cipher.decrypt(ciphertext_bytes)
                 decrypted_bytes = unpad(decrypted_padded, AES.block_size)
                 
-                # Convertimos los bytes limpios a un Diccionario Python
                 raw_data = json.loads(decrypted_bytes.decode('utf-8'))
                 
                 if isinstance(raw_data, dict) or (isinstance(raw_data, list) and len(raw_data) > 0):
-                    self.log(f"✅ SACMEX HACKEADO Y DESENCRIPTADO con éxito")
+                    self.log(f"✅ SACMEX DESENCRIPTADO VÍA PROXY RESIDENCIAL")
                     return self.process_raw_data(raw_data)
                 else:
                     raise ValueError("Array vacío después de desencriptar")
