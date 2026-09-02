@@ -344,18 +344,19 @@ class EarlyWarningSacmexAPI:
                 target_url = self.baseURL + endpoint
                 
                 # 🌐 Enrutamos a través de ScraperAPI con IP de México y modo residencial
-                proxy_api_url = "https://api.scraperapi.com"
-                payload = {
-                    'api_key': 'a5fe39e65f1c3e32a2fb9efc2e2784be',
-                    'url': target_url,
-                    'country_code': 'mx',
-                    'device_type': 'desktop',
-                    'keep_headers': 'true',
-                    'render': 'true' # Activamos el navegador headless real para superar posibles retos de seguridad
-                }
+                # 🛑 APAGADO DE PROXY SCRAPERAPI (Evitar consumo de créditos)
+                # proxy_api_url = "https://api.scraperapi.com"
+                # payload = {
+                #     'api_key': 'a5fe39e65f1c3e32a2fb9efc2e2784be',
+                #     'url': target_url,
+                #     'country_code': 'mx',
+                #     'device_type': 'desktop',
+                #     'keep_headers': 'true',
+                #     'render': 'true' 
+                # }
                 
-                # Pasamos las cabeceras de autorización de SACMEX
-                response = requests.get(proxy_api_url, params=payload, headers=headers_auth, timeout=timeout_val, verify=False)
+                # Petición directa a SACMEX (Fallará por el firewall a AWS, pero servirá el caché seguro)
+                response = requests.get(target_url, headers=headers_auth, timeout=timeout_val, verify=False)
                 response.raise_for_status()
                 
                 data_encriptada = response.json()
