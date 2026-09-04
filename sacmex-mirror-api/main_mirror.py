@@ -543,14 +543,19 @@ class EarlyWarningSacmexAPI:
             # Tomar los 4 vecinos más cercanos (k=4)
             vecinos = sorted(distancias, key=lambda x: x['dist'])[:4]
             
+            # 🚨 FIX 1: Candado de Distancia (Cut-Off 3.5 km)
+            # Solo permitimos que el nodo virtual copie valores si hay sensores cerca.
+            vecinos_validos = [v for v in vecinos if v['dist'] <= 3.5]
+            
             # Matemática IDW (Python puro)
             sum_pesos = 0.0
             sum_valores = 0.0
-            for vec in vecinos:
+            for vec in vecinos_validos:
                 peso = 1.0 / (vec['dist'] ** 2)
                 sum_pesos += peso
                 sum_valores += vec['val'] * peso
                 
+            # Si no hay vecinos válidos en el radio de 3.5 km, la lluvia es 0.0
             val_idw = sum_valores / sum_pesos if sum_pesos > 0 else 0.0
             
             # 4. Empaquetar como estación oficial
