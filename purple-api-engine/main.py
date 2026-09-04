@@ -455,27 +455,33 @@ def lambda_handler(event, context):
                 max_rain_previo = 0.0
                 fecha_previa = ahora - datetime.timedelta(minutes=3)
 
-            # 2. Lógica de Reposo (Manteniendo N < 2)
-            if len(lluvia_activa) < 2:
+            # 2. Lógica de Reposo (Cambiado a N < 1 para que una sola estación despierte el mapa)
+            if len(lluvia_activa) < 1:
                 if max_rain_previo > 0.0:
                     print("🧹 FIN DE TORMENTA: Limpiando mapa...")
                 else:
                     print("💤 ESTADO SLEEP: Mapa ya en cero.")
-                    # 🚨 IMPORTANTE: En lugar de hacer return, cerramos la ruta activa
-                    # para que la Lambda siga y aplique el barrendero si es necesario.
                     pass 
             else:
                 print(f"⛈️ ESTADO ACTIVO: {len(lluvia_activa)} estaciones con lluvia.")
 
             # Si el mapa no está en cero absoluto, procedemos a calcular
-            if len(lluvia_activa) >= 2 or max_rain_previo > 0.0:
+            if len(lluvia_activa) >= 1 or max_rain_previo > 0.0:
                 # 3. Preparación de Datos
-                if len(lluvia_activa) >= 2:
+                if len(lluvia_activa) >= 1:
+                    # 🚨 FIX 2: Anclas en Cero para la Campana de Gauss
+                    estaciones_modelo = lluvia_activa.copy()
+                    
+                    # Traemos estaciones físicas en 0.0 para que el modelo RBF sepa dónde "aterrizar" la campana
+                    anclas_cero = [s for s in estaciones if float(s['acumulado_actual']) == 0.0 and s.get('origen') != "MODELO_IDW"]
+                    estaciones_modelo.extend(anclas_cero)
+                    
                     df_obs = pd.DataFrame([{
                         'id': s['id'], 'nombre': s['nombre'], 'lat': float(s['latitud']),
                         'lon': float(s['longitud']), 'rain': float(s['acumulado_actual'])
-                    } for s in lluvia_activa])
-                    max_rain_actual = float(df_obs['rain'].max())
+                    } for s in estaciones_modelo]).drop_duplicates(subset=['id'])
+                    
+                    max_rain_actual = float(max([float(s['acumulado_actual']) for s in lluvia_activa]))
                 else:
                     df_obs = pd.DataFrame(columns=['id', 'nombre', 'lat', 'lon', 'rain'])
                     max_rain_actual = 0.0
