@@ -92,47 +92,32 @@ def obtener_vientos_macro():
     return VIENTO_CACHE['data']
 
 # 1. ESTA ES TU FUNCIÓN ORIGINAL (No la tocamos, se queda para el Modelo Live / SACMEX)
-def ejecutar_interpolacion(df_puntos, malla_base):
-    """Interpolación RBF Gaussiana centralizada"""
-    try:
-        rbf = Rbf(df_puntos['lon'], df_puntos['lat'], df_puntos['rain'], 
-                  function='gaussian', epsilon=0.03, smooth=0.1)
-        prediccion = np.round(np.maximum(0, rbf(malla_base['lon'], malla_base['lat'])), 2)
-        prediccion[prediccion < 0.15] = 0
-        return prediccion
-    except:
-        tree = cKDTree(df_puntos[['lon', 'lat']].values)
-        dist, _ = tree.query(malla_base[['lon', 'lat']].values)
-        vals = np.zeros(len(malla_base))
-        vals[dist < 0.02] = df_puntos['rain'].max()
-        return vals
+
 
 # 2. 🚨 FIX: ESTA ES LA NUEVA FUNCIÓN (Exclusiva para el Pronóstico / Open-Meteo)
-def ejecutar_interpolacion_atmosferica(df_puntos, malla_base):
-    """Modelo SCIT (Storm Cell Identification Tracking) con Kernels Gaussianos"""
+# 🚨 MODELO DEFINITIVO: SCIT Kinemático con Anisotropía de Viento
+def ejecutar_interpolacion(df_puntos, malla_base):
+    """Genera campanas Gaussianas asimétricas (colas de tormenta) basadas en viento"""
     import numpy as np
     import math
     from scipy.spatial import cKDTree
     
     try:
-        # 1. Identificar nodos activos (Umbral mínimo para existir)
+        # 1. Identificar nodos activos
         nodos_humedos = df_puntos[df_puntos['rain'] >= 0.15].reset_index(drop=True)
-        
-        # Grid final inicializado en 0 (Lienzo en negro)
         prediccion_global = np.zeros(len(malla_base))
         
         if len(nodos_humedos) == 0:
-            return prediccion_global # Si no hay lluvia en el valle, entregamos el lienzo limpio
+            return prediccion_global
             
         lon_malla = malla_base['lon'].values
         lat_malla = malla_base['lat'].values
         
-        # 2. Algoritmo de Clustering Espacial (Vecinos a menos de ~8km o 0.075 grados)
+        # 2. Clustering Espacial
         coords = nodos_humedos[['lon', 'lat']].values
         tree = cKDTree(coords)
         pares = tree.query_pairs(r=0.075)
         
-        # Construir grupos (Connected Components) nativamente
         adj = {i: [] for i in range(len(coords))}
         for i, j in pares:
             adj[i].append(j)
@@ -152,42 +137,39 @@ def ejecutar_interpolacion_atmosferica(df_puntos, malla_base):
                         cola.extend(adj[nodo])
                 clusters.append(cluster)
         
-        # 3. Modelación de Células de Tormenta por Cluster
+        # 3. Modelación Cinématica (Anisotropía)
         for indices in clusters:
             cluster_data = nodos_humedos.iloc[indices]
             es_tormenta = len(indices) >= 3
             
-            # Viento local extraído SÓLO de esta tormenta
             viento_vel = cluster_data['wind_speed'].mean()
             viento_dir = cluster_data['wind_dir'].mean()
             
-            # Geometría de la nube
-            angulo_rad = math.radians(270 - viento_dir)
-            stretch_factor = 1.0 + (viento_vel / 15.0) if es_tormenta else 1.0 + (viento_vel / 35.0)
-            sigma = 0.038 if es_tormenta else 0.022 # Radio base (0.038 grados ~ 4.2 km)
+            # 🚨 Geometría Dinámica (Direccionalidad del frente de ráfaga)
+            angulo_viento_destino = (viento_dir + 180) % 360
+            angulo_math = (90 - angulo_viento_destino) % 360
+            angulo_rad = math.radians(angulo_math)
+            
+            stretch_factor = 1.0 + (viento_vel / 20.0)
+            sigma = 0.025 if es_tormenta else 0.015 
 
-            # Generar el Kernel (Campana de Gauss) para cada nodo del cluster
             for _, fila in cluster_data.iterrows():
                 lon_c = lon_malla - fila['lon']
                 lat_c = lat_malla - fila['lat']
                 
-                # Rotar la malla hacia la dirección del viento local
+                # Rotar a favor del viento
                 x_rot = lon_c * math.cos(angulo_rad) + lat_c * math.sin(angulo_rad)
                 y_rot = -lon_c * math.sin(angulo_rad) + lat_c * math.cos(angulo_rad)
                 
-                # Estirar la nube a lo largo del eje direccional
-                x_rot = x_rot / stretch_factor
+                # Estirar campana (Cola)
+                dist_sq_stretched = (x_rot / stretch_factor)**2 + y_rot**2
                 
-                # Distancia deformada
-                dist_sq = x_rot**2 + y_rot**2
+                # Frenar a contraviento
+                dist_sq_final = np.where(x_rot < 0, x_rot**2 + y_rot**2, dist_sq_stretched)
                 
-                # Pinta la Campana de Lluvia que va cayendo a 0 suavemente
-                intensidad = fila['rain'] * np.exp(-dist_sq / (2 * sigma**2))
-                
-                # Fusión líquida: Toma el valor más alto entre lo que ya había y la nueva nube
+                intensidad = fila['rain'] * np.exp(-dist_sq_final / (2 * sigma**2))
                 prediccion_global = np.maximum(prediccion_global, intensidad)
         
-        # 4. Limpieza final de colas (Recortar los bordes casi invisibles)
         prediccion_global = np.round(prediccion_global, 2)
         prediccion_global[prediccion_global < 0.15] = 0
         
@@ -503,14 +485,50 @@ def lambda_handler(event, context):
                     anclas_cero = [s for s in estaciones if float(s['acumulado_actual']) == 0.0 and s.get('origen') != "MODELO_IDW"]
                     estaciones_modelo.extend(anclas_cero)
                     
-                    df_obs = pd.DataFrame([{
-                        'id': s['id'], 'nombre': s['nombre'], 'lat': float(s['latitud']),
-                        'lon': float(s['longitud']), 'rain': float(s['acumulado_actual'])
-                    } for s in estaciones_modelo]).drop_duplicates(subset=['id'])
+                    # ==========================================
+                    # 🚨 FIX 3: FUSIÓN DE VECTORES (CHAAK vs OPEN-METEO)
+                    # ==========================================
+                    import math
                     
+                    macro_vientos = obtener_vientos_macro() or []
+                    arbol_om = cKDTree([[p['lat'], p['lon']] for p in macro_vientos]) if macro_vientos else None
+                    
+                    # Buscamos si CHAAK está vivo y trae viento
+                    viento_chaak_vel, viento_chaak_dir = None, None
+                    chaak_lat, chaak_lon = 19.37, -99.26
+                    for s in estaciones:
+                        if 'CHAAK' in str(s['id']).upper() and float(s.get('viento_velocidad', 0)) > 0:
+                            viento_chaak_vel, viento_chaak_dir = float(s['viento_velocidad']), float(s['viento_direccion'])
+                            chaak_lat, chaak_lon = float(s['latitud']), float(s['longitud'])
+                            break
+                    
+                    obs_list = []
+                    for s in estaciones_modelo:
+                        s_lat, s_lon = float(s['latitud']), float(s['longitud'])
+                        vel, dir_viento = 0.0, 0.0
+                        
+                        usar_chaak = False
+                        if viento_chaak_vel is not None:
+                            dist_a_chaak = math.sqrt((s_lat - chaak_lat)**2 + (s_lon - chaak_lon)**2)
+                            if dist_a_chaak <= 0.075: # Radio de ~8 km de la Ibero
+                                vel, dir_viento = viento_chaak_vel, viento_chaak_dir
+                                usar_chaak = True
+                                
+                        if not usar_chaak and arbol_om:
+                            _, idx_om = arbol_om.query([s_lat, s_lon])
+                            vel = macro_vientos[idx_om]['hourly']['wind_speed_10m'][0]
+                            dir_viento = macro_vientos[idx_om]['hourly']['wind_direction_10m'][0]
+                            
+                        obs_list.append({
+                            'id': s['id'], 'nombre': s['nombre'], 
+                            'lat': s_lat, 'lon': s_lon, 'rain': float(s['acumulado_actual']),
+                            'wind_speed': vel, 'wind_dir': dir_viento
+                        })
+                        
+                    df_obs = pd.DataFrame(obs_list).drop_duplicates(subset=['id'])
                     max_rain_actual = float(max([float(s['acumulado_actual']) for s in lluvia_activa]))
                 else:
-                    df_obs = pd.DataFrame(columns=['id', 'nombre', 'lat', 'lon', 'rain'])
+                    df_obs = pd.DataFrame(columns=['id', 'nombre', 'lat', 'lon', 'rain', 'wind_speed', 'wind_dir'])
                     max_rain_actual = 0.0
 
                 delta_time_min = (ahora - fecha_previa).total_seconds() / 60.0
