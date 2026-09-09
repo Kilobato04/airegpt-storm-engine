@@ -100,6 +100,7 @@ def ejecutar_interpolacion(df_puntos, malla_base):
     """Genera campanas Gaussianas asimétricas (colas de tormenta) basadas en viento"""
     import numpy as np
     import math
+    import pandas as pd  # <--- 🚨 INYECTAR ESTA LÍNEA
     from scipy.spatial import cKDTree
     
     try:
