@@ -591,7 +591,8 @@ class EarlyWarningSacmexAPI:
             token = '9b56e023d84c4c0e9af2d0ee95549392'
             
             end = datetime.datetime.now(self.cdmx_tz)
-            start = end - datetime.timedelta(minutes=15)
+            # 🚨 FIX 1: Ventana de 5 minutos exactos (Sincronizado con SACMEX)
+            start = end - datetime.timedelta(minutes=5)
             
             fmt = "%Y-%m-%d %H:%M:%S"
             dt_start = start.strftime(fmt).replace(" ", "%20")
@@ -608,7 +609,7 @@ class EarlyWarningSacmexAPI:
             def get_sensor_data(sensor_id):
                 try:
                     res = requests.get(url_base + str(sensor_id), headers=headers, timeout=10, verify=False)
-                    time.sleep(0.5) # Respiro vital para el firewall IIS
+                    time.sleep(0.5) 
                     raw = res.json() if res.status_code == 200 else []
                     
                     if isinstance(raw, dict):
@@ -620,31 +621,35 @@ class EarlyWarningSacmexAPI:
                     self.log(f"Micro-falla en CHAAK ({sensor_id}): {e}")
                     return []
 
-            # 🚨 SOLO LOS 3 CRÍTICOS PARA CFD (Dinámica de Fluidos)
+            # 🚨 EXTRACCIÓN DE 5 MINUTOS
             raw_rain = get_sensor_data(23) # Intensidad Lluvia
             raw_wind = get_sensor_data(19) # Velocidad Viento
             raw_deg  = get_sensor_data(18) # Dirección Viento
 
-            def extract_last_value(sensor_list):
+            def process_rain(sensor_list):
                 valid_data = [d for d in sensor_list if isinstance(d, dict) and 'Data' in d]
                 if valid_data:
-                    return self.float_safe(valid_data[-1].get('Data', 0)), valid_data[-1].get('TimeStamp', "OFFLINE")
+                    # Lluvia: El valor MÁXIMO en los 5 min
+                    val = max([self.float_safe(d.get('Data', 0)) for d in valid_data])
+                    return val, valid_data[-1].get('TimeStamp', "OFFLINE")
                 return 0.0, "OFFLINE"
 
-            def extract_max_value(sensor_list):
+            def process_wind(sensor_list):
                 valid_data = [d for d in sensor_list if isinstance(d, dict) and 'Data' in d]
                 if valid_data:
-                    return max([self.float_safe(d.get('Data', 0)) for d in valid_data]), valid_data[-1].get('TimeStamp', "OFFLINE")
+                    # Viento: El valor PROMEDIO sostenido en los 5 min
+                    vals = [self.float_safe(d.get('Data', 0)) for d in valid_data]
+                    val = sum(vals) / len(vals)
+                    return val, valid_data[-1].get('TimeStamp', "OFFLINE")
                 return 0.0, "OFFLINE"
 
-            max_lluvia, f_lluvia = extract_max_value(raw_rain)
-            wind_speed, f_viento = extract_last_value(raw_wind)
-            wind_deg, f_deg = extract_last_value(raw_deg)
+            max_lluvia, f_lluvia = process_rain(raw_rain)
+            wind_speed, f_viento = process_wind(raw_wind)
+            wind_deg, f_deg = process_wind(raw_deg)
             
             fechas_validas = [f for f in [f_lluvia, f_viento, f_deg] if f != "OFFLINE"]
             ultima_fecha = max(fechas_validas) if fechas_validas else "OFFLINE"
 
-            # 🚨 OBJETO LIMPIO: Sin campos fantasma
             return {
                 **base_data,
                 "acumulado_actual": round(max_lluvia, 2),
