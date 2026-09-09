@@ -64,6 +64,33 @@ def cargar_riesgos_historicos():
             RIESGOS_CACHE = []
     return RIESGOS_CACHE
 
+# 🚨 FIX 2: Bóveda de Memoria para el Viento de Open-Meteo
+VIENTO_CACHE = {
+    'data': None,
+    'timestamp': 0
+}
+
+def obtener_vientos_macro():
+    """Descarga Open-Meteo y retiene el vector de viento en RAM por 60 min"""
+    global VIENTO_CACHE
+    ahora_ts = int(time.time())
+    
+    # Si tenemos datos y el caché tiene menos de 1 hora (3600 segundos), reciclamos
+    if VIENTO_CACHE['data'] and (ahora_ts - VIENTO_CACHE['timestamp'] < 3600):
+        print("🌬️ [CACHE HIT] Usando macro-vientos de Open-Meteo desde RAM.")
+        return VIENTO_CACHE['data']
+        
+    print("🌬️ [CACHE MISS] Consultando Open-Meteo para vectores base...")
+    datos_om = fetch_open_meteo()
+    
+    if datos_om:
+        VIENTO_CACHE['data'] = datos_om
+        VIENTO_CACHE['timestamp'] = ahora_ts
+        return datos_om
+        
+    print("⚠️ Fallo en red OM. Utilizando último viento conocido en memoria.")
+    return VIENTO_CACHE['data']
+
 # 1. ESTA ES TU FUNCIÓN ORIGINAL (No la tocamos, se queda para el Modelo Live / SACMEX)
 def ejecutar_interpolacion(df_puntos, malla_base):
     """Interpolación RBF Gaussiana centralizada"""
