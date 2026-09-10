@@ -188,9 +188,7 @@ def fetch_open_meteo():
     """Descarga el pronóstico en micro-lotes para evitar el Error 502 de Open-Meteo en horas pico"""
     try:
         print("🌐 Extendiendo malla al Sur para incluir Parres (ID: 43)...")
-        # 🚨 FIX GEOGRÁFICO: Bajamos latS a 18.950
         latS, latN, lonW, lonE = 18.950, 19.772, -99.352, -98.867
-        # 🚨 FIX DE RESOLUCIÓN: Subimos a 12 steps para mantener el ancho de la celda
         steps = 12
         all_coords = []
         for i in range(steps + 1):
@@ -199,19 +197,17 @@ def fetch_open_meteo():
                 lon = lonW + (j * (lonE - lonW) / steps)
                 all_coords.append((f"{lat:.4f}", f"{lon:.4f}"))
         
-        # 🚨 FIX 1: Lotes más pequeños (10 en vez de 20)
         size = 10 
         chunks = [all_coords[i:i + size] for i in range(0, len(all_coords), size)]
         full_results = []
         
-        horas_futuras = 12
-        
         for idx, chunk in enumerate(chunks):
             lats = [c[0] for c in chunk]
             lons = [c[1] for c in chunk]
-            url = f"https://api.open-meteo.com/v1/forecast?latitude={','.join(lats)}&longitude={','.join(lons)}&hourly=temperature_2m,relative_humidity_2m,precipitation,surface_pressure,wind_speed_10m,wind_direction_10m&timezone=America%2FMexico_City&forecast_hours={horas_futuras}"
             
-            # 🚨 FIX 2: 3 Intentos y Timeout más generoso (30 segundos)
+            # 🚨 FIX: Pedimos 2 días enteros para asegurar cruzar la medianoche sin perder el índice
+            url = f"https://api.open-meteo.com/v1/forecast?latitude={','.join(lats)}&longitude={','.join(lons)}&hourly=temperature_2m,relative_humidity_2m,precipitation,surface_pressure,wind_speed_10m,wind_direction_10m&timezone=America%2FMexico_City&forecast_days=2"
+            
             exito_lote = False
             for intento in range(3):
                 try:
@@ -229,13 +225,12 @@ def fetch_open_meteo():
                                 "hourly": item['hourly']
                             })
                         exito_lote = True
-                        break # Salimos del bucle si fue exitoso
+                        break
                     else:
                         print(f"⚠️ Error {res.status_code} en Lote {idx+1}")
                 except Exception as e:
                     print(f"⚠️ Fallo de red en Lote {idx+1}: {e}")
                 
-                # 🚨 FIX 3: Backoff exponencial (Esperamos antes de volver a golpear la API)
                 if intento < 2:
                     time.sleep(2 + intento) 
             
@@ -243,7 +238,6 @@ def fetch_open_meteo():
                 print(f"❌ Abortando: El Lote {idx+1} falló después de 3 intentos.")
                 return None
             
-            # Respiro entre lotes exitosos
             time.sleep(1.5) 
             
         print(f"✅ Éxito: {len(full_results)} nodos procesados correctamente.")
@@ -377,7 +371,7 @@ def lambda_handler(event, context):
                 df_h = pd.DataFrame(datos_hora)
                 
                 # 🚨 FIX: Invocamos al NUEVO motor 3D (el que agregamos en el Corte 2)
-                lluvia_proyectada = ejecutar_interpolacion_atmosferica(df_h, grid)
+                lluvia_proyectada = ejecutar_interpolacion(df_h, grid)
                 
                 # Empaquetamos la lluvia proyectada (Sparse Array) para enviarla al Frontend
                 bloque_futuro["time_steps"][hora_iso] = [
