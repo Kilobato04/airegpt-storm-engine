@@ -422,12 +422,44 @@ class EarlyWarningSacmexAPI:
         try:
             s3 = boto3.client('s3')
             bucket_name = 'airegpt-storm-data'
-            # Leemos el archivo crudo que subió tu script local (Shadow Test)
             response = s3.get_object(Bucket=bucket_name, Key='test_monitoreo/sacmex_lenovo.json')
             content = response['Body'].read().decode('utf-8')
             sacmex_data = json.loads(content)
-            self.log(f"✅ SACMEX extraído de S3: {len(sacmex_data)} estaciones.")
-            return sacmex_data
+            
+            # 1. Desenvolver el JSON
+            lista_estaciones = []
+            if isinstance(sacmex_data, dict) and 'data' in sacmex_data:
+                lista_estaciones = sacmex_data['data']
+            elif isinstance(sacmex_data, list):
+                lista_estaciones = sacmex_data
+
+            # 2. 🚨 Adaptador: Normalizar la estructura al estándar que espera el Modelo
+            estaciones_normalizadas = []
+            for st in lista_estaciones:
+                lluvia = float(st.get('acumulado_actual', 0.0))
+                
+                est_norm = {
+                    "id": str(st.get('id', '0')),
+                    "estacion_id": str(st.get('id', '0')), # Crítico para detect_data_changes
+                    "nombre": st.get('nombre', 'Desconocido'),
+                    "latitud": float(st.get('latitud', 0.0)),
+                    "longitud": float(st.get('longitud', 0.0)),
+                    "alcaldia": st.get('alcaldia', 'CDMX'), # Fallback para el frontend
+                    "acumulado_actual": lluvia,
+                    "acumulado_desde": lluvia, # Crítico para el checksum
+                    "intensidad": self.calculate_intensity(lluvia),
+                    "origen": st.get('origen', 'SACMEX_S3'),
+                    "ultima_actualizacion": st.get('ultima_actualizacion', ''),
+                    "auditoria": {
+                        "confianza_index": 1.0,
+                        "alertas": []
+                    }
+                }
+                estaciones_normalizadas.append(est_norm)
+                
+            self.log(f"✅ SACMEX extraído y NORMALIZADO de S3: {len(estaciones_normalizadas)} estaciones.")
+            return estaciones_normalizadas
+            
         except Exception as e:
             self.log(f"❌ Error leyendo SACMEX de S3: {e}")
             return []
