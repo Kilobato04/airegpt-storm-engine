@@ -187,10 +187,15 @@ class EarlyWarningSacmexAPI:
         self.cache['lastAttemptTime'] = int(time.time() * 1000)
         
         try:
-            # 🚨 FIX: Eliminamos ThreadPool y la consulta a SACMEX.
-            # La Lambda Mirror ahora funciona EXCLUSIVAMENTE para CHAAK.
+            # 🚨 NUEVO CEREBRO CENTRAL: Une S3 (SACMEX) con API (CHAAK)
             fresh_data = []
             
+            # 1. Traer SACMEX crudo desde S3
+            sacmex_data = self.fetch_sacmex_from_s3()
+            if sacmex_data:
+                fresh_data.extend(sacmex_data)
+            
+            # 2. Traer CHAAK en vivo
             try:
                 chaak_data = self.fetch_chaak_station()
                 if chaak_data:
@@ -413,6 +418,20 @@ class EarlyWarningSacmexAPI:
             
         return estaciones_reales
 
+    def fetch_sacmex_from_s3(self):
+        try:
+            s3 = boto3.client('s3')
+            bucket_name = 'airegpt-storm-data'
+            # Leemos el archivo crudo que subió tu script local (Shadow Test)
+            response = s3.get_object(Bucket=bucket_name, Key='test_monitoreo/sacmex_lenovo.json')
+            content = response['Body'].read().decode('utf-8')
+            sacmex_data = json.loads(content)
+            self.log(f"✅ SACMEX extraído de S3: {len(sacmex_data)} estaciones.")
+            return sacmex_data
+        except Exception as e:
+            self.log(f"❌ Error leyendo SACMEX de S3: {e}")
+            return []
+            
     def fetch_chaak_station(self):
         base_data = {
             "id": "CHAAK-01", "nombre": "SMAA CHAAK (Ibero)",
