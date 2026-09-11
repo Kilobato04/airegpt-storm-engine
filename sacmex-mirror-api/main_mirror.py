@@ -436,18 +436,27 @@ class EarlyWarningSacmexAPI:
             # 2. 🚨 Adaptador: Normalizar la estructura al estándar que espera el Modelo
             estaciones_normalizadas = []
             for st in lista_estaciones:
-                lluvia = float(st.get('acumulado_actual', 0.0))
+                
+                # FIX: Extraer la lluvia de los últimos 5 minutos
+                historial = st.get('historial_24h', [])
+                lluvia_5min = 0.0
+                
+                if historial and isinstance(historial, list) and len(historial) > 0:
+                    lluvia_5min = float(historial[-1].get('lluvia_mm', 0.0))
+                
+                # Guardamos el total del día por si el frontend lo necesita como dato extra
+                acumulado_dia = float(st.get('acumulado_actual', 0.0))
                 
                 est_norm = {
                     "id": str(st.get('id', '0')),
-                    "estacion_id": str(st.get('id', '0')), # Crítico para detect_data_changes
+                    "estacion_id": str(st.get('id', '0')),
                     "nombre": st.get('nombre', 'Desconocido'),
                     "latitud": float(st.get('latitud', 0.0)),
                     "longitud": float(st.get('longitud', 0.0)),
-                    "alcaldia": st.get('alcaldia', 'CDMX'), # Fallback para el frontend
-                    "acumulado_actual": lluvia,
-                    "acumulado_desde": lluvia, # Crítico para el checksum
-                    "intensidad": self.calculate_intensity(lluvia),
+                    "alcaldia": st.get('alcaldia', 'CDMX'),
+                    "acumulado_actual": lluvia_5min, # El modelo IDW y el mapa usarán este valor (0.0 si no llueve ahora)
+                    "acumulado_desde": acumulado_dia,
+                    "intensidad": self.calculate_intensity(lluvia_5min),
                     "origen": st.get('origen', 'SACMEX_S3'),
                     "ultima_actualizacion": st.get('ultima_actualizacion', ''),
                     "auditoria": {
