@@ -183,6 +183,11 @@ class EarlyWarningSacmexAPI:
                 self.log(f"🚫 Circuit breaker activo. Backoff {backoff_time//60000}min")
                 return
 
+        # 🚨 FIX OPCIONAL: Buffer de latencia (15 segundos)
+        import time
+        self.log("⏳ Esperando 15s para sincronización con archivo de SACMEX...")
+        time.sleep(15)
+
         self.cache['isUpdating'] = True
         self.cache['lastAttemptTime'] = int(time.time() * 1000)
         
