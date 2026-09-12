@@ -421,7 +421,8 @@ class EarlyWarningSacmexAPI:
     def fetch_sacmex_from_s3(self):
         try:
             s3 = boto3.client('s3')
-            bucket_name = 'airegpt-storm-data'
+            # 🚨 Confirma que tu bucket se llama así
+            bucket_name = 'airegpt-storm-data' 
             response = s3.get_object(Bucket=bucket_name, Key='test_monitoreo/sacmex_lenovo.json')
             content = response['Body'].read().decode('utf-8')
             sacmex_data = json.loads(content)
@@ -433,18 +434,22 @@ class EarlyWarningSacmexAPI:
             elif isinstance(sacmex_data, list):
                 lista_estaciones = sacmex_data
 
-            # 2. 🚨 Adaptador: Normalizar la estructura al estándar que espera el Modelo
+            # 2. Adaptador con Ventana de Persistencia (15 min)
             estaciones_normalizadas = []
             for st in lista_estaciones:
                 
-                # FIX: Extraer la lluvia de los últimos 5 minutos
+                # --- FIX: Filtro Peak Hold ---
                 historial = st.get('historial_24h', [])
                 lluvia_5min = 0.0
                 
                 if historial and isinstance(historial, list) and len(historial) > 0:
-                    lluvia_5min = float(historial[-1].get('lluvia_mm', 0.0))
+                    # Tomamos hasta los últimos 3 registros
+                    ultimos_registros = historial[-3:]
+                    # Sacamos el valor máximo de esa ventana
+                    valores_recientes = [float(r.get('lluvia_mm', 0.0)) for r in ultimos_registros]
+                    lluvia_5min = max(valores_recientes)
                 
-                # Guardamos el total del día por si el frontend lo necesita como dato extra
+                # Resguardamos el acumulado del día original
                 acumulado_dia = float(st.get('acumulado_actual', 0.0))
                 
                 est_norm = {
@@ -454,8 +459,8 @@ class EarlyWarningSacmexAPI:
                     "latitud": float(st.get('latitud', 0.0)),
                     "longitud": float(st.get('longitud', 0.0)),
                     "alcaldia": st.get('alcaldia', 'CDMX'),
-                    "acumulado_actual": lluvia_5min, # El modelo IDW y el mapa usarán este valor (0.0 si no llueve ahora)
-                    "acumulado_desde": acumulado_dia,
+                    "acumulado_actual": lluvia_5min, # El modelo IDW y el mapa verán este pico
+                    "acumulado_desde": acumulado_dia, # Memoria del acumulado diario
                     "intensidad": self.calculate_intensity(lluvia_5min),
                     "origen": st.get('origen', 'SACMEX_S3'),
                     "ultima_actualizacion": st.get('ultima_actualizacion', ''),
@@ -466,7 +471,7 @@ class EarlyWarningSacmexAPI:
                 }
                 estaciones_normalizadas.append(est_norm)
                 
-            self.log(f"✅ SACMEX extraído y NORMALIZADO de S3: {len(estaciones_normalizadas)} estaciones.")
+            self.log(f"✅ SACMEX extraído (Persistencia 15m): {len(estaciones_normalizadas)} estaciones.")
             return estaciones_normalizadas
             
         except Exception as e:
